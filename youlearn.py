@@ -3,7 +3,7 @@
 YouLearn - YouTube Video Transcription and Summarization Tool
 
 This script transcribes YouTube videos and optionally generates
-summaries using OpenAI's GPT models.
+summaries using OpenAI's GPT models or Deepseek's models.
 """
 
 import argparse
@@ -14,21 +14,22 @@ import time
 from pathlib import Path
 import subprocess
 import textwrap
-from typing import Optional
+from typing import Optional, Literal
 
 import dotenv
 import requests
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import yt_dlp
 import whisper
-import openai
+from openai import OpenAI
 from tqdm import tqdm
 
 # Load environment variables from .env file
 dotenv.load_dotenv()
 
-# Set up OpenAI API key from environment variable
+# Set up API keys from environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 # Output directory
 OUTPUT_DIR = Path("output")
@@ -139,34 +140,57 @@ def transcribe_with_whisper(audio_file: str) -> Optional[str]:
         except Exception as e:
             print(f"Warning: Could not remove temporary file {audio_file}: {e}")
 
-def summarize_with_gpt(transcript: str, video_title: str) -> Optional[str]:
-    """Generate a summary of the transcript using OpenAI's GPT."""
-    if not OPENAI_API_KEY:
-        print("Error: OpenAI API key not found. Set the OPENAI_API_KEY environment variable.")
-        return None
-    
-    openai.api_key = OPENAI_API_KEY
+def summarize_with_ai(transcript: str, video_title: str, service: Literal["openai", "deepseek"] = "openai") -> Optional[str]:
+    """Generate a summary of the transcript using either OpenAI's GPT or Deepseek."""
     
     # Prepare the prompt
     system_prompt = "You are an expert at summarizing video content. Create a comprehensive summary of the following video transcript."
     user_prompt = f"Title: {video_title}\n\nTranscript:\n{transcript}\n\nPlease provide a detailed summary of this video's content, highlighting the main points, key insights, and important details."
     
     try:
-        print("Generating summary with GPT (this may take a while)...")
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",  # Use an appropriate model
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=1500,
-            temperature=0.5,
-        )
+        print(f"Generating summary with {service.upper()} (this may take a while)...")
+        
+        if service == "openai":
+            if not OPENAI_API_KEY:
+                print("Error: OpenAI API key not found. Set the OPENAI_API_KEY environment variable.")
+                return None
+                
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # You can change this to other OpenAI models
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=1500,
+                temperature=0.5,
+            )
+            
+        elif service == "deepseek":
+            if not DEEPSEEK_API_KEY:
+                print("Error: Deepseek API key not found. Set the DEEPSEEK_API_KEY environment variable.")
+                return None
+                
+            client = OpenAI(
+                api_key=DEEPSEEK_API_KEY,
+                base_url="https://api.deepseek.com"
+            )
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=1500,
+                temperature=0.5,
+            )
+            
         summary = response.choices[0].message.content
         print("Summary generation complete.")
         return summary
+        
     except Exception as e:
-        print(f"Error generating summary: {e}")
+        print(f"Error generating summary with {service}: {e}")
         return None
 
 def save_to_file(content: str, filename: str) -> None:
@@ -188,7 +212,7 @@ def sanitize_filename(title: str) -> str:
         safe_title = safe_title[:100]
     return safe_title
 
-def process_video(video_url: str, summarize: bool = False) -> None:
+def process_video(video_url: str, summarize: bool = False, ai_service: str = "openai") -> None:
     """Main function to process a YouTube video."""
     # Extract video ID
     video_id = extract_video_id(video_url)
@@ -220,13 +244,15 @@ def process_video(video_url: str, summarize: bool = False) -> None:
         
         # Generate and save summary if requested
         if summarize:
-            if OPENAI_API_KEY:
-                summary = summarize_with_gpt(transcript, video_title)
-                if summary:
-                    summary_filename = f"{safe_title}_summary.txt"
-                    save_to_file(summary, summary_filename)
+            if ai_service == "openai" and not OPENAI_API_KEY:
+                print("Warning: OpenAI summarization requested but API key not found.")
+            elif ai_service == "deepseek" and not DEEPSEEK_API_KEY:
+                print("Warning: Deepseek summarization requested but API key not found.")
             else:
-                print("Warning: Summarization requested but OpenAI API key not found.")
+                summary = summarize_with_ai(transcript, video_title, ai_service)
+                if summary:
+                    summary_filename = f"{safe_title}_{ai_service}_summary.txt"
+                    save_to_file(summary, summary_filename)
         
         print("\nProcessing complete!")
         print(f"Output files are in the '{OUTPUT_DIR}' directory.")
@@ -266,7 +292,14 @@ def main():
     parser.add_argument(
         "--summarize", 
         action="store_true",
-        help="Generate a summary of the transcript using OpenAI's GPT"
+        help="Generate a summary of the transcript using AI"
+    )
+    
+    parser.add_argument(
+        "--ai-service",
+        choices=["openai", "deepseek"],
+        default="openai",
+        help="Choose the AI service for summarization (default: openai)"
     )
     
     args = parser.parse_args()
@@ -276,7 +309,7 @@ def main():
         sys.exit(1)
     
     # Process the video
-    process_video(args.url, args.summarize)
+    process_video(args.url, args.summarize, args.ai_service)
 
 if __name__ == "__main__":
     main() 

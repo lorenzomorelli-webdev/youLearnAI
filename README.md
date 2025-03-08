@@ -1,34 +1,27 @@
-# YouLearn - YouTube Video Transcription and Summarization Tool
+# YouLearn
 
-YouLearn is a Python application that automatically transcribes YouTube videos and generates AI-powered summaries of their content.
+YouLearn is a Python tool that transcribes YouTube videos and generates AI-powered summaries using either OpenAI's GPT or Deepseek's models.
 
 ## Features
 
-- Extract subtitles directly from YouTube videos when available
-- Download and transcribe audio using Whisper when subtitles are not available
-- Generate AI-powered summaries of video content (optional)
-- Save transcriptions and summaries as text files
+- Extract transcripts from YouTube videos
+- Automatic transcription using Whisper when YouTube subtitles are not available
+- Generate summaries using either OpenAI's GPT or Deepseek's AI models
+- Support for both standard YouTube videos and Shorts
+- Clean output organization in a dedicated directory
 
-## How It Works
+## Prerequisites
 
-1. The user provides a YouTube video URL
-2. The tool attempts to extract subtitles using `youtube-transcript-api`
-3. If subtitles are not available, it downloads the audio and transcribes it using OpenAI's Whisper
-4. The transcription is saved to a text file
-5. (Optional) The transcription is sent to GPT-4 for summarization
-
-## Requirements
-
-- Python 3.8+
-- FFmpeg (must be installed on your system)
-- OpenAI API key (optional, for GPT summarization)
+- Python 3.7+
+- FFmpeg installed and added to PATH
+- OpenAI API key and/or Deepseek API key
 
 ## Installation
 
-1. Clone this repository:
+1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/youlearn.git
+git clone <repository-url>
 cd youlearn
 ```
 
@@ -38,39 +31,73 @@ cd youlearn
 pip install -r requirements.txt
 ```
 
-3. Make sure FFmpeg is installed on your system:
+3. Install FFmpeg:
 
-   - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
-   - **macOS**: `brew install ffmpeg`
-   - **Linux**: `sudo apt install ffmpeg` or equivalent
+   - Windows: Download from [FFmpeg official website](https://ffmpeg.org/download.html)
+   - Mac: `brew install ffmpeg`
+   - Linux: `sudo apt-get install ffmpeg`
 
-4. (Optional) Create a `.env` file in the project directory with your OpenAI API key:
+4. Create a `.env` file in the project root and add your API keys:
 
-```
-OPENAI_API_KEY=your_api_key_here
+```env
+OPENAI_API_KEY=your_openai_api_key_here
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
 ```
 
 ## Usage
 
-```bash
-python youlearn.py https://www.youtube.com/watch?v=VIDEO_ID [--summarize]
-```
-
-Options:
-
-- `--summarize`: Generate a summary using OpenAI's GPT (requires API key)
-
-Example:
+Basic usage:
 
 ```bash
-python youlearn.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --summarize
+python youlearn.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-The output files will be saved in the `output` directory.
+Generate summary with OpenAI (default):
+
+```bash
+python youlearn.py "https://www.youtube.com/watch?v=VIDEO_ID" --summarize
+```
+
+Generate summary with Deepseek:
+
+```bash
+python youlearn.py "https://www.youtube.com/watch?v=VIDEO_ID" --summarize --ai-service deepseek
+```
+
+### Command Line Arguments
+
+- `url`: YouTube video URL (required)
+- `--summarize`: Generate an AI summary of the transcript
+- `--ai-service`: Choose the AI service for summarization (choices: "openai", "deepseek", default: "openai")
+
+## Output
+
+The script creates an `output` directory containing:
+
+- `video_title_transcript.txt`: The video transcript
+- `video_title_openai_summary.txt` or `video_title_deepseek_summary.txt`: The AI-generated summary (if requested)
+
+## Notes
+
+- The script will first attempt to get subtitles directly from YouTube
+- If no subtitles are available, it will download the audio and use Whisper for transcription
+- Summaries are generated using either OpenAI's GPT-3.5-turbo or Deepseek's model
+- The script automatically handles video title sanitization for file naming
+
+## Error Handling
+
+- Missing API keys will result in appropriate warning messages
+- FFmpeg installation is verified before processing
+- Invalid YouTube URLs are detected and reported
+- Failed transcriptions or summarizations are handled gracefully
+
+## Contributing
+
+Feel free to open issues or submit pull requests for any improvements.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+[Your chosen license]
 
 ## Acknowledgments
 
