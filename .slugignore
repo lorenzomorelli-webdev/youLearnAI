@@ -1,0 +1,52 @@
+# Exclude development and test files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+tests/
+
+# Temporary and cache files
+*.log
+*.swp
+.DS_Store
+tmp/
+temp/
+.cache/
+.hypothesis/
+
+# Distribution files
+*.egg-info/
+dist/
+build/
+
+# Pipenv files (since we're using only requirements.txt)
+Pipfile
+Pipfile.lock
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Version control
+.git/
+.gitignore
+
+# Local environment files
+.env
+.venv/
+env/
+venv/
+
+# Local output files
+output/
+
+# Downloaded models (will be downloaded at runtime)
+models/
+*.model
+*.pt 

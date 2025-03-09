@@ -1,103 +1,115 @@
 # YouLearn
 
-YouLearn is a Python tool that transcribes YouTube videos and generates AI-powered summaries using either OpenAI's GPT or Deepseek's models.
+YouLearn è un bot Telegram che trascrive e riassume video di YouTube utilizzando sia OpenAI GPT che Deepseek.
 
-## Features
+## Caratteristiche
 
-- Extract transcripts from YouTube videos
-- Automatic transcription using Whisper when YouTube subtitles are not available
-- Generate summaries using either OpenAI's GPT or Deepseek's AI models
-- Support for both standard YouTube videos and Shorts
-- Clean output organization in a dedicated directory
+- Estrazione di trascrizioni direttamente da YouTube
+- Trascrizione automatica con Whisper quando le sottotitoli YouTube non sono disponibili
+- Generazione di riassunti utilizzando OpenAI GPT o Deepseek
+- Supporto sia per video YouTube standard che per Shorts
+- Interfaccia utente Telegram semplice con pulsanti inline
+- Ottimizzato per il deploy su Heroku
 
-## Prerequisites
+## Prerequisiti
 
-- Python 3.7+
-- FFmpeg installed and added to PATH
-- OpenAI API key and/or Deepseek API key
+- Python 3.11+
+- FFmpeg (installato nell'ambiente di deploy)
+- Token di Telegram Bot
+- OpenAI API key e/o Deepseek API key
+- Account Heroku (per il deploy)
 
-## Installation
+## Installazione Locale
 
-1. Clone the repository:
+1. Clona il repository:
 
 ```bash
 git clone <repository-url>
 cd youlearn
 ```
 
-2. Install the required Python packages:
+2. Installa le dipendenze richieste:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Install FFmpeg:
-
-   - Windows: Download from [FFmpeg official website](https://ffmpeg.org/download.html)
-   - Mac: `brew install ffmpeg`
-   - Linux: `sudo apt-get install ffmpeg`
-
-4. Create a `.env` file in the project root and add your API keys:
+3. Crea un file `.env` nella root del progetto e aggiungi le tue chiavi API:
 
 ```env
-OPENAI_API_KEY=your_openai_api_key_here
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
+TELEGRAM_TOKEN=your_telegram_bot_token
+OPENAI_API_KEY=your_openai_api_key
+DEEPSEEK_API_KEY=your_deepseek_api_key
 ```
 
-## Usage
-
-Basic usage:
+4. Avvia il bot:
 
 ```bash
-python youlearn.py "https://www.youtube.com/watch?v=VIDEO_ID"
+python bot.py
 ```
 
-Generate summary with OpenAI (default):
+## Deploy su Heroku
+
+Il progetto è ottimizzato per Heroku, con particolare attenzione alla dimensione dello "slug" (limite 500 MB).
+
+### Setup in Heroku
+
+1. Crea una nuova app su Heroku
+2. Configura le variabili d'ambiente necessarie:
+
+   - `TELEGRAM_TOKEN`: il token del tuo bot Telegram
+   - `OPENAI_API_KEY`: la tua API key OpenAI
+   - `DEEPSEEK_API_KEY`: la tua API key Deepseek (opzionale)
+
+3. Collega il repository a Heroku e deploita:
 
 ```bash
-python youlearn.py "https://www.youtube.com/watch?v=VIDEO_ID" --summarize
+# Dopo esserti loggato con heroku login
+heroku git:remote -a your-heroku-app-name
+git push heroku main
 ```
 
-Generate summary with Deepseek:
+4. Attiva il worker:
 
 ```bash
-python youlearn.py "https://www.youtube.com/watch?v=VIDEO_ID" --summarize --ai-service deepseek
+heroku ps:scale worker=1
 ```
 
-### Command Line Arguments
+### Ottimizzazioni per Heroku
 
-- `url`: YouTube video URL (required)
-- `--summarize`: Generate an AI summary of the transcript
-- `--ai-service`: Choose the AI service for summarization (choices: "openai", "deepseek", default: "openai")
+Questo progetto include varie ottimizzazioni per Heroku:
 
-## Output
+- Usa la versione CPU-only di PyTorch per ridurre la dimensione
+- Utilizza un modello Whisper più piccolo ("tiny") per risparmiare memoria
+- Include un file `.slugignore` per escludere file non necessari
+- Carica il modello Whisper solo quando necessario (lazy loading)
+- Utilizza cartelle temporanee di sistema per file temporanei
+- Rimuove automaticamente i file audio dopo la trascrizione
 
-The script creates an `output` directory containing:
+## Utilizzo del Bot
 
-- `video_title_transcript.txt`: The video transcript
-- `video_title_openai_summary.txt` or `video_title_deepseek_summary.txt`: The AI-generated summary (if requested)
+1. Avvia il bot su Telegram cercandolo per nome
+2. Invia il comando `/start` per iniziare
+3. Invia l'URL di un video YouTube
+4. Scegli "Trascrizione" o "Riassunto" dai pulsanti
+5. Attendi l'elaborazione e ricevi il risultato
 
-## Notes
+Il bot supporta:
 
-- The script will first attempt to get subtitles directly from YouTube
-- If no subtitles are available, it will download the audio and use Whisper for transcription
-- Summaries are generated using either OpenAI's GPT-3.5-turbo or Deepseek's model
-- The script automatically handles video title sanitization for file naming
+- Video YouTube standard
+- YouTube Shorts
+- Gestione di trascrizioni lunghe (inviate in più messaggi)
 
-## Error Handling
+## Note
 
-- Missing API keys will result in appropriate warning messages
-- FFmpeg installation is verified before processing
-- Invalid YouTube URLs are detected and reported
-- Failed transcriptions or summarizations are handled gracefully
+- La trascrizione con Whisper può richiedere tempo
+- La generazione del riassunto dipende dalla disponibilità delle API key
+- Se è disponibile solo una delle due API key (OpenAI o Deepseek), il bot utilizzerà quella disponibile
+- Per video molto lunghi, la trascrizione/riassunto potrebbe essere troncato
 
-## Contributing
+## Licenza
 
-Feel free to open issues or submit pull requests for any improvements.
-
-## License
-
-[Your chosen license]
+[Inserisci la tua licenza qui]
 
 ## Acknowledgments
 
