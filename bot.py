@@ -9,6 +9,10 @@ import logging
 import tempfile
 from pathlib import Path
 from typing import Optional, Literal
+import time
+import random
+from functools import wraps
+import asyncio
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -38,11 +42,58 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
+# YouTube request settings
+# Ruota tra diversi user agent per evitare il rilevamento
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0'
+]
+
+# Percorso del file dei cookie (se esiste)
+COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+HAS_COOKIE_FILE = os.path.isfile(COOKIE_FILE)
+
+if HAS_COOKIE_FILE:
+    logger.info(f"Cookie file trovato: {COOKIE_FILE}")
+else:
+    logger.warning(f"Cookie file non trovato in: {COOKIE_FILE}")
+    logger.warning("Per migliorare l'affidabilità, crea un file cookies.txt con i cookie di YouTube")
+
 if not TELEGRAM_TOKEN:
     raise ValueError("Please set the TELEGRAM_TOKEN environment variable")
 
 if not OPENAI_API_KEY:
     logger.warning("OpenAI API key not found. Transcription and summarization with OpenAI will not work.")
+
+def retry_on_error(max_retries=3, initial_delay=2):
+    """
+    Decoratore per riprovare le funzioni in caso di errore con backoff esponenziale.
+    Utile per gestire problemi temporanei come rate limiting.
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            retries = 0
+            delay = initial_delay
+            
+            while retries < max_retries:
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    retries += 1
+                    if retries >= max_retries:
+                        logger.error(f"Errore persistente dopo {max_retries} tentativi: {e}")
+                        raise e
+                    
+                    logger.warning(f"Errore: {e}. Ritentativo {retries}/{max_retries} tra {delay} secondi...")
+                    await asyncio.sleep(delay)
+                    # Backoff esponenziale con jitter per evitare richieste sincronizzate
+                    delay = delay * 2 + random.uniform(0, 1)
+            
+        return wrapper
+    return decorator
 
 def extract_video_id(url: str) -> Optional[str]:
     """Extract the video ID from a YouTube URL."""
@@ -60,19 +111,40 @@ def extract_video_id(url: str) -> Optional[str]:
     return None
 
 def get_video_title(video_id: str) -> str:
-    """Get the title of a YouTube video."""
-    # Define YT-DLP options
+    """
+    Get the title of a YouTube video using yt-dlp con configurazioni anti-bot.
+    Usa user-agent random e cookie file se disponibile.
+    """
+    # Rotazione degli user agent per sembrare più "umani"
+    selected_user_agent = random.choice(USER_AGENTS)
+    
+    # Define YT-DLP options with anti-bot measures
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
+        'user_agent': selected_user_agent,
+        'referer': 'https://www.youtube.com/',
+        # Opzioni aggiuntive per evitare restrizioni
+        'nocheckcertificate': True,
+        'ignoreerrors': True,
+        # Inserisci un delay casuale per simulare comportamento umano
+        'sleep_interval': random.uniform(1, 3),
+        'max_sleep_interval': 5,
     }
+    
+    # Aggiungi cookie file se esiste
+    if HAS_COOKIE_FILE:
+        ydl_opts['cookiefile'] = COOKIE_FILE
     
     # Try to get video info
     try:
+        logger.info(f"Recupero titolo per video ID: {video_id} con User-Agent: {selected_user_agent[:30]}...")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-            return info.get('title', f"Video {video_id}")
+            title = info.get('title', f"Video {video_id}")
+            logger.info(f"Titolo recuperato con successo: {title[:30]}...")
+            return title
     except Exception as e:
         logger.error(f"Error getting video title: {e}")
         return f"Video {video_id}"
@@ -98,14 +170,20 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
         return None
 
 async def download_audio(video_id: str) -> Optional[str]:
-    """Download audio from a YouTube video."""
+    """
+    Download audio from a YouTube video with anti-bot measures.
+    Usa user-agent diversi, cookie file e gestione dei tentativi.
+    """
     try:
         logger.info(f"Downloading audio for video ID: {video_id}")
         # Create a temporary file
         temp_dir = tempfile.gettempdir()
         output_file = os.path.join(temp_dir, f"{video_id}.mp3")
         
-        # Define YT-DLP options
+        # Rotazione degli user agent per sembrare più "umani"
+        selected_user_agent = random.choice(USER_AGENTS)
+        
+        # Define YT-DLP options with anti-bot configurations
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': output_file,
@@ -116,14 +194,49 @@ async def download_audio(video_id: str) -> Optional[str]:
             }],
             'quiet': True,
             'no_warnings': True,
+            'user_agent': selected_user_agent,
+            'referer': 'https://www.youtube.com/',
+            # Opzioni aggiuntive per evitare restrizioni
+            'nocheckcertificate': True,
+            'ignoreerrors': True,
+            # Inserisci un delay casuale per simulare comportamento umano
+            'sleep_interval': random.uniform(1, 3),
+            'max_sleep_interval': 5,
         }
         
-        # Download the audio
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+        # Aggiungi cookie file se esiste
+        if HAS_COOKIE_FILE:
+            ydl_opts['cookiefile'] = COOKIE_FILE
         
-        logger.info(f"Audio downloaded to: {output_file}")
-        return output_file
+        # Download the audio with multiple attempts if needed
+        retries = 3
+        delay = 2  # in secondi
+        
+        for attempt in range(retries):
+            try:
+                logger.info(f"Tentativo {attempt+1}/{retries} download audio con User-Agent: {selected_user_agent[:30]}...")
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+                
+                # Verifica che il file esista e abbia dimensione > 0
+                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                    logger.info(f"Audio downloaded to: {output_file}")
+                    return output_file
+                else:
+                    raise Exception("File di output non creato o vuoto")
+            
+            except Exception as e:
+                if attempt < retries - 1:
+                    wait_time = delay * (2 ** attempt) + random.uniform(0, 1)  # backoff esponenziale con jitter
+                    logger.warning(f"Errore nel download audio: {e}. Riprovo tra {wait_time:.1f} secondi...")
+                    await asyncio.sleep(wait_time)
+                    # Cambia user agent ad ogni tentativo
+                    ydl_opts['user_agent'] = random.choice(USER_AGENTS)
+                else:
+                    logger.error(f"Failed to download audio after {retries} attempts: {e}")
+                    return None
+        
+        return None  # Dovrebbe essere irraggiungibile, ma lo includo per sicurezza
     
     except Exception as e:
         logger.error(f"Error downloading audio: {e}")
@@ -272,17 +385,26 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def get_transcript(video_id: str) -> Optional[str]:
-    """Get transcript using existing YouLearn functionality."""
-    # Try to get transcript from YouTube
-    transcript = await get_transcript_from_youtube(video_id)
+    """Get transcript using existing YouLearn functionality with retry logic."""
+    # Try to get transcript from YouTube with retry logic
+    for attempt in range(3):
+        try:
+            transcript = await get_transcript_from_youtube(video_id)
+            if transcript:
+                return transcript
+            break  # Se otteniamo una risposta valida (anche se null), usciamo dal ciclo
+        except Exception as e:
+            logger.warning(f"Errore tentativo {attempt+1}/3 recupero trascrizione: {e}")
+            if attempt < 2:  # Non aspettiamo dopo l'ultimo tentativo
+                await asyncio.sleep(2 * (2 ** attempt))  # Backoff esponenziale
     
-    # If no transcript available, try Whisper API
-    if not transcript:
-        audio_file = await download_audio(video_id)
-        if audio_file:
-            transcript = await transcribe_with_whisper_api(audio_file)
+    # If no transcript available from YouTube API, try downloading and using Whisper
+    audio_file = await download_audio(video_id)
+    if audio_file:
+        transcript = await transcribe_with_whisper_api(audio_file)
+        return transcript
     
-    return transcript
+    return None
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle button presses."""
