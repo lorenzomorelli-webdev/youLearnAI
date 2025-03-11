@@ -1,11 +1,11 @@
 # YouLearn
 
-YouLearn è un bot Telegram che trascrive e riassume video di YouTube utilizzando sia OpenAI GPT che Deepseek.
+YouLearn è un bot Telegram che trascrive e riassume video di YouTube utilizzando le API di OpenAI.
 
 ## Caratteristiche
 
 - Estrazione di trascrizioni direttamente da YouTube
-- Trascrizione automatica con Whisper quando le sottotitoli YouTube non sono disponibili
+- Trascrizione automatica con l'API Whisper di OpenAI quando i sottotitoli YouTube non sono disponibili
 - Generazione di riassunti utilizzando OpenAI GPT o Deepseek
 - Supporto sia per video YouTube standard che per Shorts
 - Interfaccia utente Telegram semplice con pulsanti inline
@@ -16,7 +16,8 @@ YouLearn è un bot Telegram che trascrive e riassume video di YouTube utilizzand
 - Python 3.11+
 - FFmpeg (installato nell'ambiente di deploy)
 - Token di Telegram Bot
-- OpenAI API key e/o Deepseek API key
+- OpenAI API key (usata sia per la trascrizione che per il riassunto)
+- Deepseek API key (opzionale, per riassunti alternativi)
 - Account Heroku (per il deploy)
 
 ## Installazione Locale
@@ -39,7 +40,7 @@ pip install -r requirements.txt
 ```env
 TELEGRAM_TOKEN=your_telegram_bot_token
 OPENAI_API_KEY=your_openai_api_key
-DEEPSEEK_API_KEY=your_deepseek_api_key
+DEEPSEEK_API_KEY=your_deepseek_api_key  # opzionale
 ```
 
 4. Avvia il bot:
@@ -58,7 +59,7 @@ Il progetto è ottimizzato per Heroku, con particolare attenzione alla dimension
 2. Configura le variabili d'ambiente necessarie:
 
    - `TELEGRAM_TOKEN`: il token del tuo bot Telegram
-   - `OPENAI_API_KEY`: la tua API key OpenAI
+   - `OPENAI_API_KEY`: la tua API key OpenAI (usata sia per Whisper che per GPT)
    - `DEEPSEEK_API_KEY`: la tua API key Deepseek (opzionale)
 
 3. Collega il repository a Heroku e deploita:
@@ -79,10 +80,9 @@ heroku ps:scale worker=1
 
 Questo progetto include varie ottimizzazioni per Heroku:
 
-- Usa la versione CPU-only di PyTorch per ridurre la dimensione
-- Utilizza un modello Whisper più piccolo ("tiny") per risparmiare memoria
+- **Utilizzo delle API anziché dei modelli locali**: utilizziamo l'API Whisper di OpenAI anziché eseguire localmente il modello, riducendo drasticamente la dimensione dello slug
+- Nessuna dipendenza pesante come PyTorch
 - Include un file `.slugignore` per escludere file non necessari
-- Carica il modello Whisper solo quando necessario (lazy loading)
 - Utilizza cartelle temporanee di sistema per file temporanei
 - Rimuove automaticamente i file audio dopo la trascrizione
 
@@ -102,10 +102,16 @@ Il bot supporta:
 
 ## Note
 
-- La trascrizione con Whisper può richiedere tempo
-- La generazione del riassunto dipende dalla disponibilità delle API key
-- Se è disponibile solo una delle due API key (OpenAI o Deepseek), il bot utilizzerà quella disponibile
-- Per video molto lunghi, la trascrizione/riassunto potrebbe essere troncato
+- La trascrizione con l'API Whisper è molto più veloce rispetto al modello locale
+- La generazione del riassunto dipende dalla disponibilità dell'API key OpenAI
+- Se è disponibile solo l'API key Deepseek, il bot utilizzerà quella per i riassunti
+- Per video molto lunghi, la trascrizione/riassunto potrebbe essere troncato a causa dei limiti API
+
+## Costi
+
+- L'API Whisper di OpenAI ha un costo di circa $0.006 per minuto di audio
+- L'API GPT-3.5-turbo ha un costo di circa $0.002 per 1000 token
+- Calcola i costi in base all'utilizzo previsto
 
 ## Licenza
 

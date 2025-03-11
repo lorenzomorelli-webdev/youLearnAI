@@ -13,12 +13,11 @@ from typing import Optional, Literal
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import yt_dlp
-import whisper
-from openai import OpenAI
 import re
 import requests
 from tqdm import tqdm
 import dotenv
+from openai import OpenAI
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -42,8 +41,8 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 if not TELEGRAM_TOKEN:
     raise ValueError("Please set the TELEGRAM_TOKEN environment variable")
 
-# Global variable to store the Whisper model (lazy loading)
-whisper_model = None
+if not OPENAI_API_KEY:
+    logger.warning("OpenAI API key not found. Transcription and summarization with OpenAI will not work.")
 
 def extract_video_id(url: str) -> Optional[str]:
     """Extract the video ID from a YouTube URL."""
@@ -130,24 +129,26 @@ async def download_audio(video_id: str) -> Optional[str]:
         logger.error(f"Error downloading audio: {e}")
         return None
 
-async def transcribe_with_whisper(audio_file: str) -> Optional[str]:
-    """Transcribe audio using OpenAI's Whisper."""
-    global whisper_model
+async def transcribe_with_whisper_api(audio_file: str) -> Optional[str]:
+    """Transcribe audio using OpenAI's Whisper API."""
+    if not OPENAI_API_KEY:
+        logger.error("Cannot use Whisper API without OpenAI API key")
+        return None
     
     try:
-        logger.info(f"Transcribing audio file: {audio_file}")
+        logger.info(f"Transcribing audio file with OpenAI Whisper API: {audio_file}")
         
-        # Lazy load the model - use a smaller model to save memory
-        if whisper_model is None:
-            logger.info("Loading Whisper model (this may take a moment)")
-            # Use 'tiny' or 'base' model instead of 'large' to save memory
-            whisper_model = whisper.load_model("tiny")
+        client = OpenAI(api_key=OPENAI_API_KEY)
         
-        # Transcribe the audio
-        result = whisper_model.transcribe(audio_file)
-        transcript = result["text"]
+        with open(audio_file, "rb") as audio:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio,
+                language="it"  # Usa italiano per default, puoi anche rilevare automaticamente
+            )
         
-        logger.info("Audio transcription completed")
+        transcript = response.text
+        logger.info("Audio transcription completed via API")
         
         # Clean up the temporary file
         try:
@@ -159,7 +160,7 @@ async def transcribe_with_whisper(audio_file: str) -> Optional[str]:
         return transcript
     
     except Exception as e:
-        logger.error(f"Error transcribing audio: {e}")
+        logger.error(f"Error transcribing audio with OpenAI API: {e}")
         return None
 
 async def summarize_with_ai(transcript: str, video_title: str, service: Literal["openai", "deepseek"] = "openai") -> Optional[str]:
@@ -275,11 +276,11 @@ async def get_transcript(video_id: str) -> Optional[str]:
     # Try to get transcript from YouTube
     transcript = await get_transcript_from_youtube(video_id)
     
-    # If no transcript available, try Whisper
+    # If no transcript available, try Whisper API
     if not transcript:
         audio_file = await download_audio(video_id)
         if audio_file:
-            transcript = await transcribe_with_whisper(audio_file)
+            transcript = await transcribe_with_whisper_api(audio_file)
     
     return transcript
 

@@ -46,7 +46,25 @@ venv/
 # Local output files
 output/
 
-# Downloaded models (will be downloaded at runtime)
+# PyTorch and model files - not needed as we use API now
 models/
 *.model
-*.pt 
+*.pt
+*.pth
+*.pkl
+*.bin
+*.h5
+*.onnx
+*.trt
+.torch/
+.pytorch/
+.cache/torch/
+.cache/huggingface/
+
+# Ignore any downloaded CUDA libraries
+*cuda*
+*nvrtc*
+*cudnn*
+*cublas*
+*cufft*
+*cusolver* 

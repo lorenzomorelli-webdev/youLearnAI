@@ -13,10 +13,8 @@ yt-dlp==2023.11.16
 python-dotenv==1.0.0
 tqdm==4.66.1
 
-# Transcription - CPU-only version of torch to save space
-torch==2.1.2 -f https://download.pytorch.org/whl/torch_stable.html
-torchaudio==2.1.2 -f https://download.pytorch.org/whl/torch_stable.html
-
-# Use a minimal Whisper model
-git+https://github.com/openai/whisper.git
+# No longer need torch or whisper as we'll use the API
+# torch==2.1.2
+# torchaudio==2.1.2
+# git+https://github.com/openai/whisper.git
 # Note: At runtime we'll use a smaller model (tiny or base) instead of large 
