@@ -24,6 +24,7 @@ import requests
 from tqdm import tqdm
 import dotenv
 from openai import OpenAI
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -173,8 +174,6 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
     Usa diverse strategie e gestisce le particolarità di Heroku.
     """
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable
-        
         logger.info(f"Getting transcript for video ID: {video_id}")
         
         # Strategia 1: Prova con lista di lingue specifiche
@@ -212,7 +211,7 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
                     # Continua con le eccezioni esterne
                     raise e3
     
-    except (TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable) as e:
+    except (TranscriptsDisabled, NoTranscriptFound) as e:
         logger.warning(f"No transcript available on YouTube: {e}")
         logger.warning(f"Video URL: https://www.youtube.com/watch?v={video_id}")
         return None
@@ -289,6 +288,10 @@ async def download_audio(video_id: str) -> Optional[str]:
             'fragment_retries': 5,
             'skip_unavailable_fragments': True,
             'keepvideo': False,
+            # Forza IPv4 (può aiutare ad evitare blocchi)
+            'force_ipv4': True,
+            # Limita la velocità di download per sembrare meno sospetto
+            'ratelimit': 1000000,  # 1 MB/s
         }
         
         # Aggiungi cookie file se esiste e non siamo su Heroku
@@ -309,11 +312,16 @@ async def download_audio(video_id: str) -> Optional[str]:
         # Se siamo su Heroku, aggiungi altre opzioni specifiche
         if IS_HEROKU:
             # Su Heroku, prova con opzioni che hanno più probabilità di successo
-            ydl_opts['format'] = 'worstaudio'  # Usa l'audio a qualità più bassa per ridurre le possibilità di blocco
-            ydl_opts.pop('postprocessors', None)  # Evita il post-processing che potrebbe fallire
+            # Prova con un formato legacy (come il formato 18 o 140) che ha meno probabilità di essere bloccato
+            ydl_opts['format'] = '140/bestaudio[acodec^=mp4a]/18/best'  # Formato Audio-Only MP4 (M4A)
+            # Evita il post-processing che potrebbe fallire e passa direttamente il file audio
+            if 'postprocessors' in ydl_opts:
+                ydl_opts.pop('postprocessors', None)
             
             # Aumenta il timeout per le richieste HTTP su Heroku
             ydl_opts['socket_timeout'] = 30
+            # Limita ulteriormente la velocità di download su Heroku
+            ydl_opts['ratelimit'] = 500000  # 500 KB/s
             logger.info("Configurazione ottimizzata per Heroku")
             
         # Download the audio with multiple attempts if needed
@@ -353,14 +361,20 @@ async def download_audio(video_id: str) -> Optional[str]:
                         # Cambia drasticamente la strategia ad ogni tentativo
                         if attempt == 0:
                             # Secondo tentativo: prova con un formato diverso
-                            ydl_opts['format'] = 'worstaudio'  # Prova con audio a bassa qualità
-                            logger.info("Cambio strategia: provo con audio a bassa qualità")
+                            ydl_opts['format'] = '18/best'  # Prova con il formato video legacy
+                            # Prova a forzare IPv6 se IPv4 ha fallito
+                            ydl_opts['force_ipv4'] = False
+                            ydl_opts['force_ipv6'] = True
+                            logger.info("Cambio strategia: provo con formato legacy e IPv6")
                         elif attempt == 1:
-                            # Terzo tentativo: prova con un approccio diverso (senza postprocessing)
-                            ydl_opts['format'] = 'bestaudio'
+                            # Terzo tentativo: prova con un approccio completamente diverso
+                            ydl_opts['format'] = 'worstaudio'
                             ydl_opts.pop('postprocessors', None)  # Rimuovi post-processing
-                            ydl_opts['extract_flat'] = True
-                            logger.info("Cambio strategia: provo senza post-processing")
+                            ydl_opts['force_ipv4'] = True  # Torna a IPv4
+                            ydl_opts['force_ipv6'] = False
+                            # Imposta client web diverso
+                            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['web', 'tv']}}
+                            logger.info("Cambio strategia: provo con audio a bassa qualità e client diverso")
                 
                 if attempt < retries - 1:
                     wait_time = delay * (2 ** attempt) + random.uniform(1, 3)  # backoff esponenziale con jitter
@@ -507,8 +521,6 @@ async def check_transcript_availability(video_id: str) -> bool:
     Questo è utile per decidere se tentare il download dell'audio o no.
     """
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable
-
         logger.info(f"Checking transcript availability for video ID: {video_id}")
         
         try:
@@ -518,7 +530,7 @@ async def check_transcript_availability(video_id: str) -> bool:
             available_languages = [t.language_code for t in transcript_list]
             logger.info(f"Transcripts available in languages: {available_languages}")
             return True
-        except (TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable):
+        except (TranscriptsDisabled, NoTranscriptFound):
             logger.warning(f"No transcripts available for video ID: {video_id}")
             return False
         except Exception as e:
@@ -643,7 +655,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if query.data.startswith("whisper_"):
         video_id = query.data.split("_")[1]
         context.user_data['video_id'] = video_id  # Salva l'ID per riferimento futuro
-        await query.edit_message_text("⏳ Trascrizione con Whisper in corso (potrebbe richiedere tempo)...")
+        
+        # Se siamo su Heroku, avvisiamo preventivamente l'utente delle possibili difficoltà
+        if IS_HEROKU:
+            await query.edit_message_text(
+                "⏳ Tentativo di trascrizione con Whisper in corso...\n\n"
+                "⚠️ Nota: su Heroku, YouTube spesso blocca i download. "
+                "Se il download fallisce, prova invece ad usare il bot su video con trascrizioni già disponibili."
+            )
+        else:
+            await query.edit_message_text("⏳ Trascrizione con Whisper in corso (potrebbe richiedere tempo)...")
         
         # Scarica l'audio e trascrivilo
         audio_file = await download_audio(video_id)
@@ -666,7 +687,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
         else:
             if IS_HEROKU:
-                await query.edit_message_text("❌ Download dell'audio fallito su Heroku. YouTube potrebbe bloccare le richieste dai server Heroku.")
+                await query.edit_message_text(
+                    "❌ Download dell'audio fallito su Heroku.\n\n"
+                    "YouTube blocca sistematicamente i download dai server Heroku. "
+                    "Per ottenere trascrizioni, prova a:\n"
+                    "1. Usare video che hanno trascrizioni già disponibili su YouTube\n"
+                    "2. Usare il bot in locale anziché su Heroku\n"
+                    "3. Provare con un altro video"
+                )
             else:
                 await query.edit_message_text("❌ Download dell'audio fallito. Prova con un altro video o aggiorna i cookie.")
             return
@@ -692,10 +720,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             # Continue anyway, just with a generic title
         
         # Get transcript
-        transcript = await get_transcript(video_id, context, query)
-        if transcript is None:
-            # La funzione get_transcript ha mostrato la richiesta per Whisper se necessario
-            return
+        transcript = None
+        # Su Heroku, dai priorità alla trascrizione diretta di YouTube prima di tutto
+        if IS_HEROKU:
+            # Prima prova a ottenere la trascrizione direttamente da YouTube senza chiedere conferma
+            transcript = await get_transcript_from_youtube(video_id)
+            
+            if transcript is None:
+                # Se non è disponibile la trascrizione e siamo su Heroku, chiedi all'utente se vuole provare Whisper
+                # (ma avvisa che potrebbe non funzionare)
+                keyboard = [
+                    [
+                        InlineKeyboardButton("✅ Sì, usa Whisper", callback_data=f"whisper_{video_id}"),
+                        InlineKeyboardButton("❌ No, annulla", callback_data="cancel"),
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    "❌ Non è stato possibile ottenere la trascrizione da YouTube per questo video.\n\n"
+                    "⚠️ Avviso: su Heroku, i downloads di YouTube spesso falliscono a causa delle restrizioni della piattaforma.\n\n"
+                    "Vuoi comunque provare a utilizzare OpenAI Whisper? Questo richiederà il download dell'audio, "
+                    "che probabilmente fallirà su Heroku, e utilizzerà crediti API aggiuntivi.",
+                    reply_markup=reply_markup
+                )
+                return
+        else:
+            # Su ambiente non-Heroku, usa il comportamento normale
+            transcript = await get_transcript(video_id, context, query)
+            if transcript is None:
+                # La funzione get_transcript ha mostrato la richiesta per Whisper se necessario
+                return
         
         if query.data == 'transcript':
             # Send transcript in chunks due to Telegram message length limits
@@ -746,10 +801,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text(
                 "❌ Errore di autenticazione API. Contatta l'amministratore del bot."
             )
+        elif IS_HEROKU and "transcript" in str(e).lower():
+            await query.edit_message_text(
+                "❌ Errore nel recupero della trascrizione.\n\n"
+                "Su Heroku, prova ad utilizzare solo video che hanno già trascrizioni disponibili su YouTube."
+            )
         elif IS_HEROKU:
             await query.edit_message_text(
-                "❌ Si è verificato un errore durante l'elaborazione su Heroku. "
-                "Alcuni video potrebbero non essere supportati su questo ambiente."
+                "❌ Si è verificato un errore durante l'elaborazione su Heroku.\n\n"
+                "Le limitazioni di Heroku potrebbero impedire il download dell'audio. "
+                "Prova con video che hanno trascrizioni già disponibili su YouTube."
             )
         else:
             await query.edit_message_text(
