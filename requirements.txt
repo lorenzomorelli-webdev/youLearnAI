@@ -6,7 +6,7 @@ openai==1.3.5
 requests==2.31.0
 
 # YouTube processing
-youtube-transcript-api==0.6.1
+youtube-transcript-api==1.0.0
 yt-dlp==2023.11.16
 
 # Utilities
@@ -17,4 +17,4 @@ tqdm==4.66.1
 # torch==2.1.2
 # torchaudio==2.1.2
 # git+https://github.com/openai/whisper.git
-# Note: At runtime we'll use a smaller model (tiny or base) instead of large 
+# Note: At runtime we'll use a smaller model (tiny or base) instead of large

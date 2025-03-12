@@ -13,6 +13,8 @@ import time
 import random
 from functools import wraps
 import asyncio
+import platform
+import sys
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -51,15 +53,31 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0'
 ]
 
+# Rileva se l'app è in esecuzione su Heroku
+IS_HEROKU = "DYNO" in os.environ
+
 # Percorso del file dei cookie (se esiste)
 COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
 HAS_COOKIE_FILE = os.path.isfile(COOKIE_FILE)
 
 if HAS_COOKIE_FILE:
     logger.info(f"Cookie file trovato: {COOKIE_FILE}")
+    if IS_HEROKU:
+        logger.warning("Esecuzione su Heroku rilevata. I cookie potrebbero non funzionare correttamente.")
+        # Verifica che il file cookies.txt esista ancora (potrebbe essere stato rimosso durante il deployment)
+        if not os.path.exists(COOKIE_FILE):
+            logger.error(f"File cookies.txt non accessibile su Heroku: {COOKIE_FILE}")
+            HAS_COOKIE_FILE = False
 else:
     logger.warning(f"Cookie file non trovato in: {COOKIE_FILE}")
     logger.warning("Per migliorare l'affidabilità, crea un file cookies.txt con i cookie di YouTube")
+
+# Log delle informazioni di ambiente per il debug
+logger.info(f"Ambiente di esecuzione: {'Heroku' if IS_HEROKU else 'Locale/Altro'}")
+logger.info(f"Sistema: {platform.system()} {platform.release()}")
+logger.info(f"Python: {sys.version}")
+logger.info(f"Directory corrente: {os.getcwd()}")
+logger.info(f"Contenuto directory: {os.listdir('.')}")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("Please set the TELEGRAM_TOKEN environment variable")
@@ -150,35 +168,78 @@ def get_video_title(video_id: str) -> str:
         return f"Video {video_id}"
 
 async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
-    """Try to get transcript directly from YouTube."""
+    """
+    Prova a ottenere la trascrizione direttamente da YouTube.
+    Usa diverse strategie e gestisce le particolarità di Heroku.
+    """
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+        from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable
         
         logger.info(f"Getting transcript for video ID: {video_id}")
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'it'])
         
-        # Combine all transcript pieces into a single text
-        transcript = ' '.join([item['text'] for item in transcript_list])
-        logger.info("Successfully retrieved transcript from YouTube")
-        return transcript
+        # Strategia 1: Prova con lista di lingue specifiche
+        try:
+            # Tenta prima con lingue specifiche
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'it'])
+            transcript = ' '.join([item['text'] for item in transcript_list])
+            logger.info("Successfully retrieved transcript from YouTube (lingua specificata)")
+            return transcript
+        except (NoTranscriptFound, TranscriptsDisabled) as e:
+            logger.warning(f"No specific language transcript, trying automatic: {e}")
+            
+            # Strategia 2: Prova con rilevamento automatico della lingua (disponibile in v1.0.0+)
+            try:
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                transcript = ' '.join([item['text'] for item in transcript_list])
+                logger.info("Successfully retrieved transcript with auto language detection")
+                return transcript
+            except Exception as e2:
+                logger.warning(f"Auto language detection failed: {e2}")
+                
+                # Strategia 3: Prova a elencare tutte le trascrizioni disponibili e seleziona la prima
+                try:
+                    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                    
+                    # Prendi la prima trascrizione disponibile
+                    for transcript_obj in transcript_list:
+                        transcript_data = transcript_obj.fetch()
+                        transcript = ' '.join([item['text'] for item in transcript_data])
+                        logger.info(f"Successfully retrieved transcript in {transcript_obj.language_code}")
+                        return transcript
+                        
+                except Exception as e3:
+                    logger.warning(f"Failed to list available transcripts: {e3}")
+                    # Continua con le eccezioni esterne
+                    raise e3
     
-    except (TranscriptsDisabled, NoTranscriptFound) as e:
+    except (TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable) as e:
         logger.warning(f"No transcript available on YouTube: {e}")
+        logger.warning(f"Video URL: https://www.youtube.com/watch?v={video_id}")
         return None
     except Exception as e:
         logger.error(f"Error retrieving transcript from YouTube: {e}")
+        logger.error(f"Video URL: https://www.youtube.com/watch?v={video_id}")
+        # Log dettagliati per il debug
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 async def download_audio(video_id: str) -> Optional[str]:
     """
     Download audio from a YouTube video with enhanced anti-bot measures.
     Usa user-agent diversi, cookie file, e tecniche avanzate di evasione del rilevamento.
+    Adattato per funzionare su Heroku.
     """
     try:
         logger.info(f"Downloading audio for video ID: {video_id}")
         # Create a temporary file
         temp_dir = tempfile.gettempdir()
         output_file = os.path.join(temp_dir, f"{video_id}.mp3")
+        
+        # Mostra informazioni sul percorso del file temporaneo
+        logger.info(f"Temporary file path: {output_file}")
+        logger.info(f"Temp directory exists: {os.path.exists(temp_dir)}")
+        logger.info(f"Temp directory writable: {os.access(temp_dir, os.W_OK)}")
         
         # Rotazione degli user agent per sembrare più "umani"
         selected_user_agent = random.choice(USER_AGENTS)
@@ -230,13 +291,31 @@ async def download_audio(video_id: str) -> Optional[str]:
             'keepvideo': False,
         }
         
-        # Aggiungi cookie file se esiste
-        if HAS_COOKIE_FILE:
+        # Aggiungi cookie file se esiste e non siamo su Heroku
+        # Su Heroku, il file potrebbe esistere ma non essere accessibile
+        if HAS_COOKIE_FILE and not IS_HEROKU:
             ydl_opts['cookiefile'] = COOKIE_FILE
             logger.info("Utilizzando il file cookies.txt")
+        elif HAS_COOKIE_FILE and IS_HEROKU:
+            # Su Heroku, verifica che il file sia effettivamente accessibile
+            if os.path.exists(COOKIE_FILE) and os.access(COOKIE_FILE, os.R_OK):
+                ydl_opts['cookiefile'] = COOKIE_FILE
+                logger.info("Utilizzando il file cookies.txt su Heroku")
+            else:
+                logger.warning("Cookie file non accessibile su Heroku, sebbene rilevato in precedenza")
         else:
             logger.warning("File cookies.txt non trovato. L'utilizzo di cookie aumenterebbe le probabilità di successo.")
         
+        # Se siamo su Heroku, aggiungi altre opzioni specifiche
+        if IS_HEROKU:
+            # Su Heroku, prova con opzioni che hanno più probabilità di successo
+            ydl_opts['format'] = 'worstaudio'  # Usa l'audio a qualità più bassa per ridurre le possibilità di blocco
+            ydl_opts.pop('postprocessors', None)  # Evita il post-processing che potrebbe fallire
+            
+            # Aumenta il timeout per le richieste HTTP su Heroku
+            ydl_opts['socket_timeout'] = 30
+            logger.info("Configurazione ottimizzata per Heroku")
+            
         # Download the audio with multiple attempts if needed
         retries = 3
         delay = 3  # in secondi
@@ -304,6 +383,9 @@ async def download_audio(video_id: str) -> Optional[str]:
     
     except Exception as e:
         logger.error(f"Error downloading audio: {e}")
+        # Log dettagliati per il debug
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 async def transcribe_with_whisper_api(audio_file: str) -> Optional[str]:
@@ -419,6 +501,34 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(help_text)
 
+async def check_transcript_availability(video_id: str) -> bool:
+    """
+    Verifica rapidamente se sono disponibili trascrizioni per un video.
+    Questo è utile per decidere se tentare il download dell'audio o no.
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable
+
+        logger.info(f"Checking transcript availability for video ID: {video_id}")
+        
+        try:
+            # Non scarichiamo effettivamente la trascrizione, controlliamo solo se è disponibile
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            # Se arriviamo qui, ci sono trascrizioni disponibili
+            available_languages = [t.language_code for t in transcript_list]
+            logger.info(f"Transcripts available in languages: {available_languages}")
+            return True
+        except (TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable):
+            logger.warning(f"No transcripts available for video ID: {video_id}")
+            return False
+        except Exception as e:
+            logger.error(f"Error checking transcript availability: {e}")
+            return False
+    
+    except Exception as e:
+        logger.error(f"Error importing or using YouTubeTranscriptApi: {e}")
+        return False
+
 async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Process a YouTube URL and show action buttons."""
     url = update.message.text
@@ -434,6 +544,10 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['video_id'] = video_id
     context.user_data['video_url'] = url
     
+    # Verifica rapidamente se il video ha trascrizioni disponibili
+    has_transcript = await check_transcript_availability(video_id)
+    context.user_data['has_transcript'] = has_transcript
+    
     # Create inline keyboard
     keyboard = [
         [
@@ -441,15 +555,43 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
             InlineKeyboardButton("📚 Riassunto", callback_data='summary')
         ]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     
+    # Se non ci sono trascrizioni disponibili, avvisa l'utente
+    reply_text = "🎥 Cosa vuoi fare con questo video?"
+    if not has_transcript and IS_HEROKU:
+        reply_text = "⚠️ Questo video non ha trascrizioni disponibili e su Heroku potrebbe non essere possibile scaricare l'audio.\n" + reply_text
+    elif not has_transcript:
+        reply_text = "⚠️ Questo video non ha trascrizioni disponibili. Si tenterà di scaricare l'audio e trascriverlo con Whisper.\n" + reply_text
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🎥 Cosa vuoi fare con questo video?",
+        reply_text,
         reply_markup=reply_markup
     )
 
 async def get_transcript(video_id: str, context: Optional[ContextTypes.DEFAULT_TYPE] = None, query = None) -> Optional[str]:
     """Get transcript using existing YouLearn functionality with retry logic."""
+    # Se il contesto è disponibile, verifica se abbiamo già controllato la disponibilità della trascrizione
+    has_transcript = context.user_data.get('has_transcript') if context else None
+    
+    # Se sappiamo già che non ci sono trascrizioni e siamo su Heroku, avvisa subito l'utente
+    if has_transcript is False and IS_HEROKU and context and query:
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Sì, usa Whisper", callback_data=f"whisper_{video_id}"),
+                InlineKeyboardButton("❌ No, annulla", callback_data="cancel"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "❓ Questo video non ha trascrizioni disponibili su YouTube e siamo su Heroku, dove il download potrebbe fallire.\n\n"
+            "Vuoi comunque provare a utilizzare OpenAI Whisper per trascrivere l'audio?\n"
+            "Nota: questo utilizzerà crediti API aggiuntivi e potrebbe non funzionare.",
+            reply_markup=reply_markup
+        )
+        return None
+    
     # Try to get transcript from YouTube with retry logic
     for attempt in range(3):
         try:
@@ -473,12 +615,14 @@ async def get_transcript(video_id: str, context: Optional[ContextTypes.DEFAULT_T
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
-            "❓ Non è stato possibile ottenere la trascrizione direttamente da YouTube.\n\n"
-            "Vuoi utilizzare OpenAI Whisper per trascrivere l'audio?\n"
-            "Nota: questo utilizzerà crediti API aggiuntivi.",
-            reply_markup=reply_markup
-        )
+        message = "❓ Non è stato possibile ottenere la trascrizione direttamente da YouTube.\n\n"
+        if IS_HEROKU:
+            message += "⚠️ Nota: su Heroku, il download dell'audio potrebbe fallire a causa delle restrizioni di YouTube.\n\n"
+        
+        message += "Vuoi utilizzare OpenAI Whisper per trascrivere l'audio?\n" 
+        message += "Nota: questo utilizzerà crediti API aggiuntivi."
+        
+        await query.edit_message_text(message, reply_markup=reply_markup)
         return None
     
     # Nel caso il contesto non sia disponibile o per uso interno
@@ -517,9 +661,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         await query.message.reply_text(chunk)
                 await query.edit_message_text("✅ Trascrizione completata!")
                 return
-        
-        await query.edit_message_text("❌ Non è stato possibile trascrivere l'audio con Whisper.")
-        return
+            else:
+                await query.edit_message_text("❌ Non è stato possibile trascrivere l'audio con Whisper.")
+                return
+        else:
+            if IS_HEROKU:
+                await query.edit_message_text("❌ Download dell'audio fallito su Heroku. YouTube potrebbe bloccare le richieste dai server Heroku.")
+            else:
+                await query.edit_message_text("❌ Download dell'audio fallito. Prova con un altro video o aggiorna i cookie.")
+            return
     
     # Gestisce il caso di annullamento
     if query.data == "cancel":
@@ -537,6 +687,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         # Get video title
         video_title = get_video_title(video_id)
+        if video_title == f"Video {video_id}":
+            logger.warning(f"Could not retrieve title for video ID: {video_id}")
+            # Continue anyway, just with a generic title
         
         # Get transcript
         transcript = await get_transcript(video_id, context, query)
@@ -581,9 +734,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 
     except Exception as e:
         logger.error(f"Error processing request: {e}")
-        await query.edit_message_text(
-            "❌ Si è verificato un errore durante l'elaborazione della richiesta."
-        )
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Messaggio di errore più informativo
+        if "quota" in str(e).lower() or "rate" in str(e).lower():
+            await query.edit_message_text(
+                "❌ Errore: limite di quota API raggiunto. Riprova più tardi."
+            )
+        elif "auth" in str(e).lower() or "key" in str(e).lower():
+            await query.edit_message_text(
+                "❌ Errore di autenticazione API. Contatta l'amministratore del bot."
+            )
+        elif IS_HEROKU:
+            await query.edit_message_text(
+                "❌ Si è verificato un errore durante l'elaborazione su Heroku. "
+                "Alcuni video potrebbero non essere supportati su questo ambiente."
+            )
+        else:
+            await query.edit_message_text(
+                "❌ Si è verificato un errore durante l'elaborazione della richiesta."
+            )
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log Errors caused by Updates."""
