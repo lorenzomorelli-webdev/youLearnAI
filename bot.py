@@ -171,8 +171,8 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
 
 async def download_audio(video_id: str) -> Optional[str]:
     """
-    Download audio from a YouTube video with anti-bot measures.
-    Usa user-agent diversi, cookie file e gestione dei tentativi.
+    Download audio from a YouTube video with enhanced anti-bot measures.
+    Usa user-agent diversi, cookie file, e tecniche avanzate di evasione del rilevamento.
     """
     try:
         logger.info(f"Downloading audio for video ID: {video_id}")
@@ -183,7 +183,22 @@ async def download_audio(video_id: str) -> Optional[str]:
         # Rotazione degli user agent per sembrare più "umani"
         selected_user_agent = random.choice(USER_AGENTS)
         
-        # Define YT-DLP options with anti-bot configurations
+        # Header HTTP aggiuntivi per simulare un browser web reale
+        http_headers = {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'cross-site',
+            'Pragma': 'no-cache',
+            'Cache-Control': 'no-cache',
+        }
+        
+        # Define YT-DLP options with enhanced anti-bot configurations
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': output_file,
@@ -195,28 +210,49 @@ async def download_audio(video_id: str) -> Optional[str]:
             'quiet': True,
             'no_warnings': True,
             'user_agent': selected_user_agent,
-            'referer': 'https://www.youtube.com/',
+            'referer': 'https://www.google.com/',  # Simula una provenienza da ricerca Google
             # Opzioni aggiuntive per evitare restrizioni
             'nocheckcertificate': True,
             'ignoreerrors': True,
             # Inserisci un delay casuale per simulare comportamento umano
-            'sleep_interval': random.uniform(1, 3),
-            'max_sleep_interval': 5,
+            'sleep_interval': random.uniform(2, 5),
+            'max_sleep_interval': 10,
+            # Header HTTP personalizzati
+            'http_headers': http_headers,
+            # Evita le restrizioni di geo-blocking
+            'geo_bypass': True,
+            # Non usare IPv6 (alcuni filtri si basano su IPv6)
+            'source_address': '0.0.0.0',
+            # Ulteriori opzioni avanzate
+            'extractor_retries': 5,
+            'fragment_retries': 5,
+            'skip_unavailable_fragments': True,
+            'keepvideo': False,
         }
         
         # Aggiungi cookie file se esiste
         if HAS_COOKIE_FILE:
             ydl_opts['cookiefile'] = COOKIE_FILE
+            logger.info("Utilizzando il file cookies.txt")
+        else:
+            logger.warning("File cookies.txt non trovato. L'utilizzo di cookie aumenterebbe le probabilità di successo.")
         
         # Download the audio with multiple attempts if needed
         retries = 3
-        delay = 2  # in secondi
+        delay = 3  # in secondi
         
         for attempt in range(retries):
             try:
+                # Cambia leggermente l'URL ad ogni tentativo per evitare pattern detection
+                url_suffix = "" if attempt == 0 else f"&t={random.randint(0, 10)}"
+                video_url = f"https://www.youtube.com/watch?v={video_id}{url_suffix}"
+                
                 logger.info(f"Tentativo {attempt+1}/{retries} download audio con User-Agent: {selected_user_agent[:30]}...")
+                # Aggiungi un delay casuale prima del download per simulare comportamento umano
+                await asyncio.sleep(random.uniform(1, 3))
+                
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+                    ydl.download([video_url])
                 
                 # Verifica che il file esista e abbia dimensione > 0
                 if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
@@ -226,17 +262,45 @@ async def download_audio(video_id: str) -> Optional[str]:
                     raise Exception("File di output non creato o vuoto")
             
             except Exception as e:
+                error_msg = str(e)
+                logger.warning(f"Errore tentativo {attempt+1}: {error_msg}")
+                
+                # Se l'errore è 403 Forbidden, potrebbero essere necessarie ulteriori misure
+                if "403" in error_msg or "Forbidden" in error_msg:
+                    logger.warning("Rilevato errore 403 Forbidden - YouTube sta bloccando il download")
+                    
+                    # Prova a modificare strategia
+                    if attempt < retries - 1:
+                        # Cambia drasticamente la strategia ad ogni tentativo
+                        if attempt == 0:
+                            # Secondo tentativo: prova con un formato diverso
+                            ydl_opts['format'] = 'worstaudio'  # Prova con audio a bassa qualità
+                            logger.info("Cambio strategia: provo con audio a bassa qualità")
+                        elif attempt == 1:
+                            # Terzo tentativo: prova con un approccio diverso (senza postprocessing)
+                            ydl_opts['format'] = 'bestaudio'
+                            ydl_opts.pop('postprocessors', None)  # Rimuovi post-processing
+                            ydl_opts['extract_flat'] = True
+                            logger.info("Cambio strategia: provo senza post-processing")
+                
                 if attempt < retries - 1:
-                    wait_time = delay * (2 ** attempt) + random.uniform(0, 1)  # backoff esponenziale con jitter
-                    logger.warning(f"Errore nel download audio: {e}. Riprovo tra {wait_time:.1f} secondi...")
+                    wait_time = delay * (2 ** attempt) + random.uniform(1, 3)  # backoff esponenziale con jitter
+                    logger.warning(f"Riprovo tra {wait_time:.1f} secondi...")
                     await asyncio.sleep(wait_time)
                     # Cambia user agent ad ogni tentativo
-                    ydl_opts['user_agent'] = random.choice(USER_AGENTS)
+                    selected_user_agent = random.choice(USER_AGENTS)
+                    ydl_opts['user_agent'] = selected_user_agent
+                    # Cambia anche altri parametri per evitare detection
+                    http_headers['Accept-Language'] = random.choice(['en-US,en;q=0.9', 'en-GB,en;q=0.8', 'en;q=0.7'])
+                    ydl_opts['http_headers'] = http_headers
                 else:
-                    logger.error(f"Failed to download audio after {retries} attempts: {e}")
+                    logger.error(f"Failed to download audio after {retries} attempts: {error_msg}")
+                    if "HTTP Error 403: Forbidden" in error_msg:
+                        logger.error("YouTube ha bloccato sistematicamente il download. "
+                                    "È possibile che siano necessari nuovi cookie o un proxy.")
                     return None
         
-        return None  # Dovrebbe essere irraggiungibile, ma lo includo per sicurezza
+        return None
     
     except Exception as e:
         logger.error(f"Error downloading audio: {e}")
@@ -384,7 +448,7 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=reply_markup
     )
 
-async def get_transcript(video_id: str) -> Optional[str]:
+async def get_transcript(video_id: str, context: Optional[ContextTypes.DEFAULT_TYPE] = None, query = None) -> Optional[str]:
     """Get transcript using existing YouLearn functionality with retry logic."""
     # Try to get transcript from YouTube with retry logic
     for attempt in range(3):
@@ -398,7 +462,27 @@ async def get_transcript(video_id: str) -> Optional[str]:
             if attempt < 2:  # Non aspettiamo dopo l'ultimo tentativo
                 await asyncio.sleep(2 * (2 ** attempt))  # Backoff esponenziale
     
-    # If no transcript available from YouTube API, try downloading and using Whisper
+    # Se non è disponibile la trascrizione da YouTube e abbiamo un contesto di conversazione
+    # chiediamo all'utente se vuole utilizzare Whisper (che consumerà più crediti API)
+    if context and query:
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Sì, usa Whisper", callback_data=f"whisper_{video_id}"),
+                InlineKeyboardButton("❌ No, annulla", callback_data="cancel"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "❓ Non è stato possibile ottenere la trascrizione direttamente da YouTube.\n\n"
+            "Vuoi utilizzare OpenAI Whisper per trascrivere l'audio?\n"
+            "Nota: questo utilizzerà crediti API aggiuntivi.",
+            reply_markup=reply_markup
+        )
+        return None
+    
+    # Nel caso il contesto non sia disponibile o per uso interno
+    # tentativo diretto con Whisper (comportamento originale)
     audio_file = await download_audio(video_id)
     if audio_file:
         transcript = await transcribe_with_whisper_api(audio_file)
@@ -410,6 +494,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Handle button presses."""
     query = update.callback_query
     await query.answer()  # Acknowledge the button press
+    
+    # Controlla se è una richiesta di trascrizione con Whisper
+    if query.data.startswith("whisper_"):
+        video_id = query.data.split("_")[1]
+        context.user_data['video_id'] = video_id  # Salva l'ID per riferimento futuro
+        await query.edit_message_text("⏳ Trascrizione con Whisper in corso (potrebbe richiedere tempo)...")
+        
+        # Scarica l'audio e trascrivilo
+        audio_file = await download_audio(video_id)
+        if audio_file:
+            transcript = await transcribe_with_whisper_api(audio_file)
+            if transcript:
+                video_title = get_video_title(video_id)
+                # Invia la trascrizione
+                chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        header = f"📝 Trascrizione (Whisper): {video_title}\n\n"
+                        await query.message.reply_text(header + chunk)
+                    else:
+                        await query.message.reply_text(chunk)
+                await query.edit_message_text("✅ Trascrizione completata!")
+                return
+        
+        await query.edit_message_text("❌ Non è stato possibile trascrivere l'audio con Whisper.")
+        return
+    
+    # Gestisce il caso di annullamento
+    if query.data == "cancel":
+        await query.edit_message_text("⚠️ Operazione annullata.")
+        return
     
     video_id = context.user_data.get('video_id')
     if not video_id:
@@ -424,9 +539,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         video_title = get_video_title(video_id)
         
         # Get transcript
-        transcript = await get_transcript(video_id)
-        if not transcript:
-            await query.edit_message_text("❌ Non è stato possibile ottenere la trascrizione del video.")
+        transcript = await get_transcript(video_id, context, query)
+        if transcript is None:
+            # La funzione get_transcript ha mostrato la richiesta per Whisper se necessario
             return
         
         if query.data == 'transcript':

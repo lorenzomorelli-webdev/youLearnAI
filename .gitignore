@@ -28,3 +28,5 @@ temp_*.mp3
 *.swo 
 
 .env
+
+debug_results/
