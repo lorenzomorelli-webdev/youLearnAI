@@ -59,11 +59,18 @@ if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD:
         'http': PROXY_URL,
         'https': PROXY_URL
     }
-    logger.info("Proxy configurato correttamente")
+    logger.info(f"Proxy configurato: {PROXY_HOST}:{PROXY_PORT}")
+    logger.info(f"Ambiente Heroku: {IS_HEROKU}")
+    logger.info("Credenziali proxy presenti e configurate correttamente")
 else:
     PROXIES = None
     if USE_PROXY:
-        logger.warning("Proxy richiesto ma credenziali mancanti. Verifica le variabili d'ambiente.")
+        logger.warning("Proxy richiesto ma credenziali mancanti. Verifica le variabili d'ambiente:")
+        logger.warning(f"USE_PROXY: {USE_PROXY}")
+        logger.warning(f"PROXY_USERNAME presente: {bool(PROXY_USERNAME)}")
+        logger.warning(f"PROXY_PASSWORD presente: {bool(PROXY_PASSWORD)}")
+        logger.warning(f"PROXY_HOST: {PROXY_HOST}")
+        logger.warning(f"PROXY_PORT: {PROXY_PORT}")
     else:
         logger.info("Proxy non configurato. Utilizzo connessione diretta.")
 
@@ -102,14 +109,25 @@ def get_youtube_session():
     session = requests.Session()
     
     # Imposta un User-Agent casuale
-    session.headers.update({'User-Agent': random.choice(USER_AGENTS)})
+    selected_user_agent = random.choice(USER_AGENTS)
+    session.headers.update({'User-Agent': selected_user_agent})
     
     # Aggiungi il proxy solo se configurato
     if PROXIES:
         session.proxies.update(PROXIES)
-        logger.info("Sessione YouTube creata con proxy")
+        logger.info(f"Sessione YouTube creata con proxy: {PROXY_HOST}")
+        logger.info(f"User-Agent utilizzato: {selected_user_agent}")
+        if IS_HEROKU:
+            logger.info("Esecuzione su Heroku - Verificando configurazione proxy...")
+            try:
+                # Test della connessione proxy
+                test_response = session.get('https://api.ipify.org?format=json')
+                logger.info(f"Test connessione proxy - IP utilizzato: {test_response.json().get('ip')}")
+                logger.info(f"Test connessione proxy - Status code: {test_response.status_code}")
+            except Exception as e:
+                logger.error(f"Errore nel test del proxy su Heroku: {e}")
     else:
-        logger.info("Sessione YouTube creata senza proxy")
+        logger.info(f"Sessione YouTube creata senza proxy. User-Agent: {selected_user_agent}")
     
     return session
 
@@ -275,26 +293,29 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
     Utilizza il proxy se configurato.
     """
     try:
-        logger.info(f"Getting transcript for video ID: {video_id}")
+        logger.info(f"Richiesta trascrizione per video ID: {video_id}")
+        logger.info(f"Ambiente: {'Heroku' if IS_HEROKU else 'Non-Heroku'}")
+        logger.info(f"Proxy configurato: {bool(PROXIES)}")
         
         # Strategia 1: Prova con lista di lingue specifiche
         try:
-            # Tenta prima con lingue specifiche
+            logger.info("Tentativo trascrizione con lingue specifiche (en, it)")
             transcript_list = ProxyTranscriptApi.get_transcript(video_id, languages=['en', 'it'])
             transcript = ' '.join([item['text'] for item in transcript_list])
-            logger.info("Successfully retrieved transcript from YouTube (lingua specificata)")
+            logger.info("Trascrizione ottenuta con successo (lingua specificata)")
             return transcript
         except (NoTranscriptFound, TranscriptsDisabled) as e:
-            logger.warning(f"No specific language transcript, trying automatic: {e}")
+            logger.warning(f"Nessuna trascrizione in lingue specifiche: {e}")
             
-            # Strategia 2: Prova con rilevamento automatico della lingua (disponibile in v1.0.0+)
+            # Strategia 2: Prova con rilevamento automatico della lingua
             try:
+                logger.info("Tentativo trascrizione con rilevamento automatico lingua")
                 transcript_list = ProxyTranscriptApi.get_transcript(video_id)
                 transcript = ' '.join([item['text'] for item in transcript_list])
-                logger.info("Successfully retrieved transcript with auto language detection")
+                logger.info("Trascrizione ottenuta con rilevamento automatico lingua")
                 return transcript
             except Exception as e2:
-                logger.warning(f"Auto language detection failed: {e2}")
+                logger.warning(f"Rilevamento automatico lingua fallito: {e2}")
                 
                 # Strategia 3: Prova a elencare tutte le trascrizioni disponibili e seleziona la prima
                 try:
@@ -331,15 +352,19 @@ async def download_audio(video_id: str) -> Optional[str]:
     Adattato per funzionare su Heroku.
     """
     try:
-        logger.info(f"Downloading audio for video ID: {video_id}")
+        logger.info(f"Avvio download audio per video ID: {video_id}")
+        logger.info(f"Ambiente: {'Heroku' if IS_HEROKU else 'Non-Heroku'}")
+        logger.info(f"Proxy attivo: {bool(PROXIES)}")
+        
         # Create a temporary file
         temp_dir = tempfile.gettempdir()
         output_file = os.path.join(temp_dir, f"{video_id}.mp3")
         
         # Mostra informazioni sul percorso del file temporaneo
-        logger.info(f"Temporary file path: {output_file}")
-        logger.info(f"Temp directory exists: {os.path.exists(temp_dir)}")
-        logger.info(f"Temp directory writable: {os.access(temp_dir, os.W_OK)}")
+        logger.info(f"Directory temporanea: {temp_dir}")
+        logger.info(f"Percorso file output: {output_file}")
+        logger.info(f"Directory temp esiste: {os.path.exists(temp_dir)}")
+        logger.info(f"Directory temp scrivibile: {os.access(temp_dir, os.W_OK)}")
         
         # Rotazione degli user agent per sembrare più "umani"
         selected_user_agent = random.choice(USER_AGENTS)
