@@ -93,6 +93,7 @@ logger.info(f"Python: {sys.version}")
 logger.info(f"Directory corrente: {os.getcwd()}")
 logger.info(f"Contenuto directory: {os.listdir('.')}")
 logger.info(f"Proxy attivo: {USE_PROXY}")
+logger.info(f"Ambiente Heroku: {IS_HEROKU}")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("Please set the TELEGRAM_TOKEN environment variable")
