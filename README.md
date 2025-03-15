@@ -1,6 +1,104 @@
-# YouLearn
+# YouLearn Bot
 
-YouLearn è un bot Telegram che trascrive e riassume video di YouTube utilizzando le API di OpenAI.
+Un bot Telegram che permette di ottenere trascrizioni e riassunti di video YouTube.
+
+## Funzionalità
+
+- 📝 Ottieni la trascrizione di qualsiasi video YouTube
+- 📚 Genera riassunti intelligenti del contenuto con OpenAI (gpt-4o-mini) o Deepseek
+- 🌐 Supporto per video con sottotitoli in diverse lingue
+- 🤖 Trascrizione automatica tramite OpenAI Whisper per video senza sottotitoli
+- 🔄 Possibilità di scegliere tra diversi modelli AI per i riassunti
+
+## Configurazione
+
+### Prerequisiti
+
+- Python 3.8+
+- Un token per un bot Telegram (ottenibile tramite [@BotFather](https://t.me/BotFather))
+- Una chiave API OpenAI (per la trascrizione con Whisper e i riassunti con gpt-4o-mini)
+- Opzionale: Una chiave API Deepseek (per riassunti alternativi)
+- Opzionale: Un account SmartProxy per bypassare i blocchi di YouTube
+
+### Installazione
+
+1. Clona il repository:
+
+   ```
+   git clone https://github.com/tuousername/youlearn-bot.git
+   cd youlearn-bot
+   ```
+
+2. Installa le dipendenze:
+
+   ```
+   pip install -r requirements.txt
+   ```
+
+3. Copia il file `.env.example` in `.env` e inserisci le tue credenziali:
+
+   ```
+   cp .env.example .env
+   ```
+
+4. Modifica il file `.env` con le tue chiavi API e configurazioni.
+
+### Configurazione del Proxy
+
+Il bot supporta l'uso di SmartProxy per bypassare i blocchi di YouTube. Per configurarlo:
+
+1. Ottieni un account su [SmartProxy](https://smartproxy.com/)
+2. Configura le seguenti variabili nel file `.env`:
+   ```
+   USE_PROXY=true
+   PROXY_USERNAME=your_username
+   PROXY_PASSWORD=your_password
+   PROXY_HOST=gate.smartproxy.com
+   PROXY_PORT=10001
+   ```
+
+Il proxy verrà utilizzato solo per le chiamate a YouTube (download trascrizioni e audio), risparmiando traffico.
+
+### Deployment su Heroku
+
+1. Crea un'app su Heroku
+2. Configura le variabili d'ambiente nell'interfaccia di Heroku (Settings > Config Vars)
+3. Collega il repository GitHub e deploy
+
+## Utilizzo
+
+1. Avvia il bot:
+
+   ```
+   python bot.py
+   ```
+
+2. Invia un link YouTube al bot su Telegram
+3. Scegli tra le opzioni disponibili:
+   - 📝 **Trascrizione**: ottieni la trascrizione completa del video
+   - 📚 **Riassunto OpenAI**: genera un riassunto utilizzando il modello gpt-4o-mini di OpenAI
+   - 📚 **Riassunto Deepseek**: genera un riassunto utilizzando il modello di Deepseek
+
+## Modelli AI Supportati
+
+Il bot supporta due modelli AI per la generazione di riassunti:
+
+1. **OpenAI (gpt-4o-mini)**: Un modello potente e compatto di OpenAI, ottimo per riassunti dettagliati e ben strutturati.
+2. **Deepseek**: Un'alternativa che può offrire prospettive diverse o essere utilizzata quando OpenAI non è disponibile.
+
+Puoi configurare uno o entrambi i modelli. Il bot mostrerà solo le opzioni per i modelli configurati.
+
+## Note per Heroku
+
+Su Heroku, YouTube tende a bloccare i download di audio. Per questo motivo:
+
+- Il bot tenterà prima di ottenere le trascrizioni direttamente da YouTube
+- L'uso del proxy può aiutare a superare questi blocchi
+- Per i video senza trascrizioni disponibili, il download dell'audio potrebbe comunque fallire
+
+## Licenza
+
+MIT
 
 ## Caratteristiche
 

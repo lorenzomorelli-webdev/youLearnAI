@@ -45,6 +45,28 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
+# SmartProxy configuration
+USE_PROXY = os.getenv("USE_PROXY", "false").lower() == "true"
+PROXY_USERNAME = os.getenv("PROXY_USERNAME")
+PROXY_PASSWORD = os.getenv("PROXY_PASSWORD")
+PROXY_HOST = os.getenv("PROXY_HOST", "gate.smartproxy.com")
+PROXY_PORT = os.getenv("PROXY_PORT", "10001")
+
+# Configura il proxy solo se tutte le variabili necessarie sono presenti
+if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD:
+    PROXY_URL = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
+    PROXIES = {
+        'http': PROXY_URL,
+        'https': PROXY_URL
+    }
+    logger.info("Proxy configurato correttamente")
+else:
+    PROXIES = None
+    if USE_PROXY:
+        logger.warning("Proxy richiesto ma credenziali mancanti. Verifica le variabili d'ambiente.")
+    else:
+        logger.info("Proxy non configurato. Utilizzo connessione diretta.")
+
 # YouTube request settings
 # Ruota tra diversi user agent per evitare il rilevamento
 USER_AGENTS = [
@@ -57,34 +79,39 @@ USER_AGENTS = [
 # Rileva se l'app è in esecuzione su Heroku
 IS_HEROKU = "DYNO" in os.environ
 
-# Percorso del file dei cookie (se esiste)
-COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-HAS_COOKIE_FILE = os.path.isfile(COOKIE_FILE)
-
-if HAS_COOKIE_FILE:
-    logger.info(f"Cookie file trovato: {COOKIE_FILE}")
-    if IS_HEROKU:
-        logger.warning("Esecuzione su Heroku rilevata. I cookie potrebbero non funzionare correttamente.")
-        # Verifica che il file cookies.txt esista ancora (potrebbe essere stato rimosso durante il deployment)
-        if not os.path.exists(COOKIE_FILE):
-            logger.error(f"File cookies.txt non accessibile su Heroku: {COOKIE_FILE}")
-            HAS_COOKIE_FILE = False
-else:
-    logger.warning(f"Cookie file non trovato in: {COOKIE_FILE}")
-    logger.warning("Per migliorare l'affidabilità, crea un file cookies.txt con i cookie di YouTube")
-
 # Log delle informazioni di ambiente per il debug
 logger.info(f"Ambiente di esecuzione: {'Heroku' if IS_HEROKU else 'Locale/Altro'}")
 logger.info(f"Sistema: {platform.system()} {platform.release()}")
 logger.info(f"Python: {sys.version}")
 logger.info(f"Directory corrente: {os.getcwd()}")
 logger.info(f"Contenuto directory: {os.listdir('.')}")
+logger.info(f"Proxy attivo: {USE_PROXY}")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("Please set the TELEGRAM_TOKEN environment variable")
 
 if not OPENAI_API_KEY:
     logger.warning("OpenAI API key not found. Transcription and summarization with OpenAI will not work.")
+
+# Funzione per creare una sessione requests con proxy per YouTube
+def get_youtube_session():
+    """
+    Crea una sessione requests configurata per YouTube con proxy se disponibile.
+    Questo permette di utilizzare il proxy solo per le chiamate a YouTube.
+    """
+    session = requests.Session()
+    
+    # Imposta un User-Agent casuale
+    session.headers.update({'User-Agent': random.choice(USER_AGENTS)})
+    
+    # Aggiungi il proxy solo se configurato
+    if PROXIES:
+        session.proxies.update(PROXIES)
+        logger.info("Sessione YouTube creata con proxy")
+    else:
+        logger.info("Sessione YouTube creata senza proxy")
+    
+    return session
 
 def retry_on_error(max_retries=3, initial_delay=2):
     """
@@ -132,7 +159,7 @@ def extract_video_id(url: str) -> Optional[str]:
 def get_video_title(video_id: str) -> str:
     """
     Get the title of a YouTube video using yt-dlp con configurazioni anti-bot.
-    Usa user-agent random e cookie file se disponibile.
+    Usa user-agent random e proxy se disponibile.
     """
     # Rotazione degli user agent per sembrare più "umani"
     selected_user_agent = random.choice(USER_AGENTS)
@@ -152,9 +179,10 @@ def get_video_title(video_id: str) -> str:
         'max_sleep_interval': 5,
     }
     
-    # Aggiungi cookie file se esiste
-    if HAS_COOKIE_FILE:
-        ydl_opts['cookiefile'] = COOKIE_FILE
+    # Aggiungi proxy se configurato
+    if PROXIES:
+        ydl_opts['proxy'] = PROXIES['https']
+        logger.info("Utilizzo proxy per il recupero del titolo del video")
     
     # Try to get video info
     try:
@@ -168,10 +196,83 @@ def get_video_title(video_id: str) -> str:
         logger.error(f"Error getting video title: {e}")
         return f"Video {video_id}"
 
+# Classe personalizzata per utilizzare il proxy con YouTubeTranscriptApi
+class ProxyTranscriptApi:
+    """
+    Wrapper per YouTubeTranscriptApi che utilizza il proxy configurato.
+    Questo permette di utilizzare il proxy solo per le chiamate a YouTube.
+    """
+    @staticmethod
+    def get_transcript(video_id, languages=None):
+        """
+        Ottiene la trascrizione di un video YouTube utilizzando il proxy se configurato.
+        """
+        if PROXIES:
+            # Configura temporaneamente il proxy per la richiesta
+            import http.client
+            import urllib.request
+            
+            # Salva le impostazioni originali
+            original_http_connection = http.client.HTTPConnection
+            original_https_connection = http.client.HTTPSConnection
+            original_opener = urllib.request._opener
+            
+            try:
+                # Configura il proxy
+                proxy_handler = urllib.request.ProxyHandler(PROXIES)
+                opener = urllib.request.build_opener(proxy_handler)
+                urllib.request.install_opener(opener)
+                
+                # Esegui la richiesta
+                logger.info(f"Richiesta trascrizione con proxy per video ID: {video_id}")
+                return YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+            finally:
+                # Ripristina le impostazioni originali
+                urllib.request._opener = original_opener
+                http.client.HTTPConnection = original_http_connection
+                http.client.HTTPSConnection = original_https_connection
+        else:
+            # Usa la chiamata standard senza proxy
+            return YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+    
+    @staticmethod
+    def list_transcripts(video_id):
+        """
+        Elenca le trascrizioni disponibili per un video YouTube utilizzando il proxy se configurato.
+        """
+        if PROXIES:
+            # Configura temporaneamente il proxy per la richiesta
+            import http.client
+            import urllib.request
+            
+            # Salva le impostazioni originali
+            original_http_connection = http.client.HTTPConnection
+            original_https_connection = http.client.HTTPSConnection
+            original_opener = urllib.request._opener
+            
+            try:
+                # Configura il proxy
+                proxy_handler = urllib.request.ProxyHandler(PROXIES)
+                opener = urllib.request.build_opener(proxy_handler)
+                urllib.request.install_opener(opener)
+                
+                # Esegui la richiesta
+                logger.info(f"Richiesta lista trascrizioni con proxy per video ID: {video_id}")
+                return YouTubeTranscriptApi.list_transcripts(video_id)
+            finally:
+                # Ripristina le impostazioni originali
+                urllib.request._opener = original_opener
+                http.client.HTTPConnection = original_http_connection
+                http.client.HTTPSConnection = original_https_connection
+        else:
+            # Usa la chiamata standard senza proxy
+            return YouTubeTranscriptApi.list_transcripts(video_id)
+
 async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
     """
     Prova a ottenere la trascrizione direttamente da YouTube.
     Usa diverse strategie e gestisce le particolarità di Heroku.
+    Utilizza il proxy se configurato.
     """
     try:
         logger.info(f"Getting transcript for video ID: {video_id}")
@@ -179,7 +280,7 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
         # Strategia 1: Prova con lista di lingue specifiche
         try:
             # Tenta prima con lingue specifiche
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'it'])
+            transcript_list = ProxyTranscriptApi.get_transcript(video_id, languages=['en', 'it'])
             transcript = ' '.join([item['text'] for item in transcript_list])
             logger.info("Successfully retrieved transcript from YouTube (lingua specificata)")
             return transcript
@@ -188,7 +289,7 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
             
             # Strategia 2: Prova con rilevamento automatico della lingua (disponibile in v1.0.0+)
             try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                transcript_list = ProxyTranscriptApi.get_transcript(video_id)
                 transcript = ' '.join([item['text'] for item in transcript_list])
                 logger.info("Successfully retrieved transcript with auto language detection")
                 return transcript
@@ -197,7 +298,7 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
                 
                 # Strategia 3: Prova a elencare tutte le trascrizioni disponibili e seleziona la prima
                 try:
-                    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                    transcript_list = ProxyTranscriptApi.list_transcripts(video_id)
                     
                     # Prendi la prima trascrizione disponibile
                     for transcript_obj in transcript_list:
@@ -226,7 +327,7 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
 async def download_audio(video_id: str) -> Optional[str]:
     """
     Download audio from a YouTube video with enhanced anti-bot measures.
-    Usa user-agent diversi, cookie file, e tecniche avanzate di evasione del rilevamento.
+    Usa user-agent diversi, proxy e tecniche avanzate di evasione del rilevamento.
     Adattato per funzionare su Heroku.
     """
     try:
@@ -294,20 +395,10 @@ async def download_audio(video_id: str) -> Optional[str]:
             'ratelimit': 1000000,  # 1 MB/s
         }
         
-        # Aggiungi cookie file se esiste e non siamo su Heroku
-        # Su Heroku, il file potrebbe esistere ma non essere accessibile
-        if HAS_COOKIE_FILE and not IS_HEROKU:
-            ydl_opts['cookiefile'] = COOKIE_FILE
-            logger.info("Utilizzando il file cookies.txt")
-        elif HAS_COOKIE_FILE and IS_HEROKU:
-            # Su Heroku, verifica che il file sia effettivamente accessibile
-            if os.path.exists(COOKIE_FILE) and os.access(COOKIE_FILE, os.R_OK):
-                ydl_opts['cookiefile'] = COOKIE_FILE
-                logger.info("Utilizzando il file cookies.txt su Heroku")
-            else:
-                logger.warning("Cookie file non accessibile su Heroku, sebbene rilevato in precedenza")
-        else:
-            logger.warning("File cookies.txt non trovato. L'utilizzo di cookie aumenterebbe le probabilità di successo.")
+        # Aggiungi proxy se configurato
+        if PROXIES:
+            ydl_opts['proxy'] = PROXIES['https']
+            logger.info("Utilizzo proxy per il download dell'audio")
         
         # Se siamo su Heroku, aggiungi altre opzioni specifiche
         if IS_HEROKU:
@@ -453,7 +544,7 @@ async def summarize_with_ai(transcript: str, video_title: str, service: Literal[
                 
             client = OpenAI(api_key=OPENAI_API_KEY)
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",  # Use a smaller model to save costs
+                model="gpt-4o-mini",  # Utilizziamo gpt-4o-mini come richiesto
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -461,6 +552,7 @@ async def summarize_with_ai(transcript: str, video_title: str, service: Literal[
                 max_tokens=1500,
                 temperature=0.5,
             )
+            logger.info("Utilizzato modello gpt-4o-mini per il riassunto")
             
         elif service == "deepseek":
             if not DEEPSEEK_API_KEY:
@@ -480,6 +572,7 @@ async def summarize_with_ai(transcript: str, video_title: str, service: Literal[
                 max_tokens=1500,
                 temperature=0.5,
             )
+            logger.info("Utilizzato modello deepseek-chat per il riassunto")
             
         summary = response.choices[0].message.content
         logger.info("Summary generation complete")
@@ -519,13 +612,14 @@ async def check_transcript_availability(video_id: str) -> bool:
     """
     Verifica rapidamente se sono disponibili trascrizioni per un video.
     Questo è utile per decidere se tentare il download dell'audio o no.
+    Utilizza il proxy se configurato.
     """
     try:
         logger.info(f"Checking transcript availability for video ID: {video_id}")
         
         try:
             # Non scarichiamo effettivamente la trascrizione, controlliamo solo se è disponibile
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript_list = ProxyTranscriptApi.list_transcripts(video_id)
             # Se arriviamo qui, ci sono trascrizioni disponibili
             available_languages = [t.language_code for t in transcript_list]
             logger.info(f"Transcripts available in languages: {available_languages}")
@@ -560,11 +654,14 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
     has_transcript = await check_transcript_availability(video_id)
     context.user_data['has_transcript'] = has_transcript
     
-    # Create inline keyboard
+    # Create inline keyboard with more options
     keyboard = [
         [
-            InlineKeyboardButton("📝 Trascrizione", callback_data='transcript'),
-            InlineKeyboardButton("📚 Riassunto", callback_data='summary')
+            InlineKeyboardButton("📝 Trascrizione", callback_data='transcript')
+        ],
+        [
+            InlineKeyboardButton("📚 Riassunto OpenAI", callback_data='summary_openai'),
+            InlineKeyboardButton("📚 Riassunto Deepseek", callback_data='summary_deepseek')
         ]
     ]
     
@@ -574,6 +671,18 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_text = "⚠️ Questo video non ha trascrizioni disponibili e su Heroku potrebbe non essere possibile scaricare l'audio.\n" + reply_text
     elif not has_transcript:
         reply_text = "⚠️ Questo video non ha trascrizioni disponibili. Si tenterà di scaricare l'audio e trascriverlo con Whisper.\n" + reply_text
+    
+    # Aggiungi informazioni sui modelli disponibili
+    available_models = []
+    if OPENAI_API_KEY:
+        available_models.append("OpenAI (gpt-4o-mini)")
+    if DEEPSEEK_API_KEY:
+        available_models.append("Deepseek")
+    
+    if available_models:
+        reply_text += f"\n\nModelli disponibili per il riassunto: {', '.join(available_models)}"
+    else:
+        reply_text += "\n\n⚠️ Nessun modello AI configurato per il riassunto. Contatta l'amministratore del bot."
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -696,7 +805,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     "3. Provare con un altro video"
                 )
             else:
-                await query.edit_message_text("❌ Download dell'audio fallito. Prova con un altro video o aggiorna i cookie.")
+                await query.edit_message_text("❌ Download dell'audio fallito. Prova con un altro video o utilizza un proxy.")
             return
     
     # Gestisce il caso di annullamento
@@ -765,15 +874,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             # Update status message
             await query.edit_message_text("✅ Trascrizione completata!")
                     
-        elif query.data == 'summary':
-            await query.edit_message_text("⏳ Generazione riassunto in corso...")
+        elif query.data == 'summary_openai' or query.data == 'summary_deepseek':
+            # Determina quale servizio utilizzare in base al pulsante premuto
+            service = "openai" if query.data == 'summary_openai' else "deepseek"
             
-            # Choose the AI service (defaulting to OpenAI if both are available)
-            ai_service = "openai" if OPENAI_API_KEY else "deepseek"
+            # Verifica se il servizio richiesto è disponibile
+            if service == "openai" and not OPENAI_API_KEY:
+                await query.edit_message_text("❌ OpenAI API key non configurata. Contatta l'amministratore del bot.")
+                return
+            elif service == "deepseek" and not DEEPSEEK_API_KEY:
+                await query.edit_message_text("❌ Deepseek API key non configurata. Contatta l'amministratore del bot.")
+                return
             
-            summary = await summarize_with_ai(transcript, video_title, ai_service)
+            await query.edit_message_text(f"⏳ Generazione riassunto con {service.upper()} in corso...")
+            
+            summary = await summarize_with_ai(transcript, video_title, service)
             if summary:
-                response = f"📚 Riassunto: {video_title}\n\n{summary}"
+                service_name = "OpenAI (gpt-4o-mini)" if service == "openai" else "Deepseek"
+                response = f"📚 Riassunto ({service_name}): {video_title}\n\n{summary}"
                 # Split long summaries if needed
                 if len(response) > 4000:
                     chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
@@ -783,9 +901,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await query.message.reply_text(response)
                 
                 # Update status message
-                await query.edit_message_text("✅ Riassunto completato!")
+                await query.edit_message_text(f"✅ Riassunto con {service_name} completato!")
             else:
-                await query.edit_message_text("❌ Non è stato possibile generare il riassunto.")
+                await query.edit_message_text(f"❌ Non è stato possibile generare il riassunto con {service}.")
                 
     except Exception as e:
         logger.error(f"Error processing request: {e}")
