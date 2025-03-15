@@ -36,6 +36,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Rileva se l'app è in esecuzione su Heroku
+IS_HEROKU = "DYNO" in os.environ
+
 # Create output directory if it doesn't exist
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -82,9 +85,6 @@ USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0'
 ]
-
-# Rileva se l'app è in esecuzione su Heroku
-IS_HEROKU = "DYNO" in os.environ
 
 # Log delle informazioni di ambiente per il debug
 logger.info(f"Ambiente di esecuzione: {'Heroku' if IS_HEROKU else 'Locale/Altro'}")
