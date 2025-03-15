@@ -675,291 +675,196 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Store video_id in user_data for later use
     context.user_data['video_id'] = video_id
     context.user_data['video_url'] = url
+    context.user_data['using_proxy'] = False  # Inizialmente non usiamo proxy
     
-    # Verifica rapidamente se il video ha trascrizioni disponibili
-    has_transcript = await check_transcript_availability(video_id)
-    context.user_data['has_transcript'] = has_transcript
-    
-    # Create inline keyboard with more options
+    # Create inline keyboard with initial options
     keyboard = [
         [
-            InlineKeyboardButton("📝 Trascrizione", callback_data='transcript')
-        ],
-        [
-            InlineKeyboardButton("📚 Riassunto OpenAI", callback_data='summary_openai'),
-            InlineKeyboardButton("📚 Riassunto Deepseek", callback_data='summary_deepseek')
+            InlineKeyboardButton("📝 Trascrizione", callback_data='transcript'),
+            InlineKeyboardButton("📚 Riassunto", callback_data='summary_choice')
         ]
     ]
     
-    # Se non ci sono trascrizioni disponibili, avvisa l'utente
-    reply_text = "🎥 Cosa vuoi fare con questo video?"
-    if not has_transcript and IS_HEROKU:
-        reply_text = "⚠️ Questo video non ha trascrizioni disponibili e su Heroku potrebbe non essere possibile scaricare l'audio.\n" + reply_text
-    elif not has_transcript:
-        reply_text = "⚠️ Questo video non ha trascrizioni disponibili. Si tenterà di scaricare l'audio e trascriverlo con Whisper.\n" + reply_text
-    
-    # Aggiungi informazioni sui modelli disponibili
-    available_models = []
-    if OPENAI_API_KEY:
-        available_models.append("OpenAI (gpt-4o-mini)")
-    if DEEPSEEK_API_KEY:
-        available_models.append("Deepseek")
-    
-    if available_models:
-        reply_text += f"\n\nModelli disponibili per il riassunto: {', '.join(available_models)}"
-    else:
-        reply_text += "\n\n⚠️ Nessun modello AI configurato per il riassunto. Contatta l'amministratore del bot."
-    
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        reply_text,
+        "🎥 Cosa vuoi fare con questo video?",
         reply_markup=reply_markup
     )
-
-async def get_transcript(video_id: str, context: Optional[ContextTypes.DEFAULT_TYPE] = None, query = None) -> Optional[str]:
-    """Get transcript using existing YouLearn functionality with retry logic."""
-    # Se il contesto è disponibile, verifica se abbiamo già controllato la disponibilità della trascrizione
-    has_transcript = context.user_data.get('has_transcript') if context else None
-    
-    # Se sappiamo già che non ci sono trascrizioni e siamo su Heroku, avvisa subito l'utente
-    if has_transcript is False and IS_HEROKU and context and query:
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Sì, usa Whisper", callback_data=f"whisper_{video_id}"),
-                InlineKeyboardButton("❌ No, annulla", callback_data="cancel"),
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            "❓ Questo video non ha trascrizioni disponibili su YouTube e siamo su Heroku, dove il download potrebbe fallire.\n\n"
-            "Vuoi comunque provare a utilizzare OpenAI Whisper per trascrivere l'audio?\n"
-            "Nota: questo utilizzerà crediti API aggiuntivi e potrebbe non funzionare.",
-            reply_markup=reply_markup
-        )
-        return None
-    
-    # Try to get transcript from YouTube with retry logic
-    for attempt in range(3):
-        try:
-            transcript = await get_transcript_from_youtube(video_id)
-            if transcript:
-                return transcript
-            break  # Se otteniamo una risposta valida (anche se null), usciamo dal ciclo
-        except Exception as e:
-            logger.warning(f"Errore tentativo {attempt+1}/3 recupero trascrizione: {e}")
-            if attempt < 2:  # Non aspettiamo dopo l'ultimo tentativo
-                await asyncio.sleep(2 * (2 ** attempt))  # Backoff esponenziale
-    
-    # Se non è disponibile la trascrizione da YouTube e abbiamo un contesto di conversazione
-    # chiediamo all'utente se vuole utilizzare Whisper (che consumerà più crediti API)
-    if context and query:
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Sì, usa Whisper", callback_data=f"whisper_{video_id}"),
-                InlineKeyboardButton("❌ No, annulla", callback_data="cancel"),
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        message = "❓ Non è stato possibile ottenere la trascrizione direttamente da YouTube.\n\n"
-        if IS_HEROKU:
-            message += "⚠️ Nota: su Heroku, il download dell'audio potrebbe fallire a causa delle restrizioni di YouTube.\n\n"
-        
-        message += "Vuoi utilizzare OpenAI Whisper per trascrivere l'audio?\n" 
-        message += "Nota: questo utilizzerà crediti API aggiuntivi."
-        
-        await query.edit_message_text(message, reply_markup=reply_markup)
-        return None
-    
-    # Nel caso il contesto non sia disponibile o per uso interno
-    # tentativo diretto con Whisper (comportamento originale)
-    audio_file = await download_audio(video_id)
-    if audio_file:
-        transcript = await transcribe_with_whisper_api(audio_file)
-        return transcript
-    
-    return None
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle button presses."""
     query = update.callback_query
-    await query.answer()  # Acknowledge the button press
-    
-    # Controlla se è una richiesta di trascrizione con Whisper
-    if query.data.startswith("whisper_"):
-        video_id = query.data.split("_")[1]
-        context.user_data['video_id'] = video_id  # Salva l'ID per riferimento futuro
-        
-        # Se siamo su Heroku, avvisiamo preventivamente l'utente delle possibili difficoltà
-        if IS_HEROKU:
-            await query.edit_message_text(
-                "⏳ Tentativo di trascrizione con Whisper in corso...\n\n"
-                "⚠️ Nota: su Heroku, YouTube spesso blocca i download. "
-                "Se il download fallisce, prova invece ad usare il bot su video con trascrizioni già disponibili."
-            )
-        else:
-            await query.edit_message_text("⏳ Trascrizione con Whisper in corso (potrebbe richiedere tempo)...")
-        
-        # Scarica l'audio e trascrivilo
-        audio_file = await download_audio(video_id)
-        if audio_file:
-            transcript = await transcribe_with_whisper_api(audio_file)
-            if transcript:
-                video_title = get_video_title(video_id)
-                # Invia la trascrizione
-                chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
-                for i, chunk in enumerate(chunks):
-                    if i == 0:
-                        header = f"📝 Trascrizione (Whisper): {video_title}\n\n"
-                        await query.message.reply_text(header + chunk)
-                    else:
-                        await query.message.reply_text(chunk)
-                await query.edit_message_text("✅ Trascrizione completata!")
-                return
-            else:
-                await query.edit_message_text("❌ Non è stato possibile trascrivere l'audio con Whisper.")
-                return
-        else:
-            if IS_HEROKU:
-                await query.edit_message_text(
-                    "❌ Download dell'audio fallito su Heroku.\n\n"
-                    "YouTube blocca sistematicamente i download dai server Heroku. "
-                    "Per ottenere trascrizioni, prova a:\n"
-                    "1. Usare video che hanno trascrizioni già disponibili su YouTube\n"
-                    "2. Usare il bot in locale anziché su Heroku\n"
-                    "3. Provare con un altro video"
-                )
-            else:
-                await query.edit_message_text("❌ Download dell'audio fallito. Prova con un altro video o utilizza un proxy.")
-            return
-    
-    # Gestisce il caso di annullamento
-    if query.data == "cancel":
-        await query.edit_message_text("⚠️ Operazione annullata.")
-        return
+    await query.answer()
     
     video_id = context.user_data.get('video_id')
     if not video_id:
         await query.edit_message_text("❌ Sessione scaduta. Invia nuovamente il link YouTube.")
         return
-    
-    # Show processing message
-    await query.edit_message_text("⏳ Elaborazione in corso...")
-    
+
+    if query.data == 'summary_choice':
+        # Mostra opzioni per il tipo di riassunto
+        keyboard = [
+            [
+                InlineKeyboardButton("📚 OpenAI", callback_data='summary_openai'),
+                InlineKeyboardButton("📚 Deepseek", callback_data='summary_deepseek')
+            ],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "Scegli il servizio per il riassunto:",
+            reply_markup=reply_markup
+        )
+        return
+
+    if query.data == 'back_to_main':
+        # Torna al menu principale
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Trascrizione", callback_data='transcript'),
+                InlineKeyboardButton("📚 Riassunto", callback_data='summary_choice')
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🎥 Cosa vuoi fare con questo video?",
+            reply_markup=reply_markup
+        )
+        return
+
+    if query.data == 'retry_with_proxy':
+        context.user_data['using_proxy'] = True
+        if context.user_data.get('last_action') == 'transcript':
+            query.data = 'transcript'
+        elif context.user_data.get('last_action') in ['summary_openai', 'summary_deepseek']:
+            query.data = context.user_data['last_action']
+        await query.edit_message_text("⏳ Riprovo con proxy...")
+
     try:
-        # Get video title
         video_title = get_video_title(video_id)
-        if video_title == f"Video {video_id}":
-            logger.warning(f"Could not retrieve title for video ID: {video_id}")
-            # Continue anyway, just with a generic title
         
-        # Get transcript
-        transcript = None
-        # Su Heroku, dai priorità alla trascrizione diretta di YouTube prima di tutto
-        if IS_HEROKU:
-            # Prima prova a ottenere la trascrizione direttamente da YouTube senza chiedere conferma
-            transcript = await get_transcript_from_youtube(video_id)
+        if query.data in ['transcript', 'summary_openai', 'summary_deepseek']:
+            context.user_data['last_action'] = query.data
+            await query.edit_message_text("⏳ Elaborazione in corso...")
             
-            if transcript is None:
-                # Se non è disponibile la trascrizione e siamo su Heroku, chiedi all'utente se vuole provare Whisper
-                # (ma avvisa che potrebbe non funzionare)
-                keyboard = [
-                    [
-                        InlineKeyboardButton("✅ Sì, usa Whisper", callback_data=f"whisper_{video_id}"),
-                        InlineKeyboardButton("❌ No, annulla", callback_data="cancel"),
+            # Primo tentativo di ottenere la trascrizione (senza proxy se non specificato)
+            transcript = None
+            try:
+                if context.user_data.get('using_proxy', False):
+                    global PROXIES
+                    PROXIES = {
+                        'http': PROXY_URL,
+                        'https': PROXY_URL
+                    } if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD else None
+                else:
+                    PROXIES = None
+                
+                transcript = await get_transcript_from_youtube(video_id)
+            except Exception as e:
+                if not context.user_data.get('using_proxy', False):
+                    # Se fallisce senza proxy, offri l'opzione di riprovare con proxy
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("🔄 Riprova con proxy", callback_data='retry_with_proxy'),
+                            InlineKeyboardButton("❌ Annulla", callback_data='cancel')
+                        ]
                     ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(
-                    "❌ Non è stato possibile ottenere la trascrizione da YouTube per questo video.\n\n"
-                    "⚠️ Avviso: su Heroku, i downloads di YouTube spesso falliscono a causa delle restrizioni della piattaforma.\n\n"
-                    "Vuoi comunque provare a utilizzare OpenAI Whisper? Questo richiederà il download dell'audio, "
-                    "che probabilmente fallirà su Heroku, e utilizzerà crediti API aggiuntivi.",
-                    reply_markup=reply_markup
-                )
-                return
-        else:
-            # Su ambiente non-Heroku, usa il comportamento normale
-            transcript = await get_transcript(video_id, context, query)
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await query.edit_message_text(
+                        "❌ Non è stato possibile ottenere la trascrizione.\n"
+                        "Vuoi riprovare utilizzando un proxy?",
+                        reply_markup=reply_markup
+                    )
+                    return
+                else:
+                    raise e
+
             if transcript is None:
-                # La funzione get_transcript ha mostrato la richiesta per Whisper se necessario
-                return
-        
-        if query.data == 'transcript':
-            # Send transcript in chunks due to Telegram message length limits
-            chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
-            for i, chunk in enumerate(chunks):
-                if i == 0:
-                    header = f"📝 Trascrizione: {video_title}\n\n"
-                    await query.message.reply_text(header + chunk)
-                else:
-                    await query.message.reply_text(chunk)
-            
-            # Update status message
-            await query.edit_message_text("✅ Trascrizione completata!")
-                    
-        elif query.data == 'summary_openai' or query.data == 'summary_deepseek':
-            # Determina quale servizio utilizzare in base al pulsante premuto
-            service = "openai" if query.data == 'summary_openai' else "deepseek"
-            
-            # Verifica se il servizio richiesto è disponibile
-            if service == "openai" and not OPENAI_API_KEY:
-                await query.edit_message_text("❌ OpenAI API key non configurata. Contatta l'amministratore del bot.")
-                return
-            elif service == "deepseek" and not DEEPSEEK_API_KEY:
-                await query.edit_message_text("❌ Deepseek API key non configurata. Contatta l'amministratore del bot.")
-                return
-            
-            await query.edit_message_text(f"⏳ Generazione riassunto con {service.upper()} in corso...")
-            
-            summary = await summarize_with_ai(transcript, video_title, service)
-            if summary:
-                service_name = "OpenAI (gpt-4o-mini)" if service == "openai" else "Deepseek"
-                response = f"📚 Riassunto ({service_name}): {video_title}\n\n{summary}"
-                # Split long summaries if needed
-                if len(response) > 4000:
-                    chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
-                    for i, chunk in enumerate(chunks):
+                if not context.user_data.get('using_proxy', False):
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("🔄 Riprova con proxy", callback_data='retry_with_proxy'),
+                            InlineKeyboardButton("❌ Annulla", callback_data='cancel')
+                        ]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await query.edit_message_text(
+                        "❌ Non è stato possibile ottenere la trascrizione.\n"
+                        "Vuoi riprovare utilizzando un proxy?",
+                        reply_markup=reply_markup
+                    )
+                    return
+
+            if query.data == 'transcript':
+                # Invia la trascrizione
+                chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        header = f"📝 Trascrizione: {video_title}\n\n"
+                        await query.message.reply_text(header + chunk)
+                    else:
                         await query.message.reply_text(chunk)
+                await query.edit_message_text("✅ Trascrizione completata!")
+
+            elif query.data in ['summary_openai', 'summary_deepseek']:
+                service = "openai" if query.data == 'summary_openai' else "deepseek"
+                
+                # Verifica disponibilità API key
+                if service == "openai" and not OPENAI_API_KEY:
+                    await query.edit_message_text("❌ OpenAI API key non configurata. Contatta l'amministratore del bot.")
+                    return
+                elif service == "deepseek" and not DEEPSEEK_API_KEY:
+                    await query.edit_message_text("❌ Deepseek API key non configurata. Contatta l'amministratore del bot.")
+                    return
+
+                await query.edit_message_text(f"⏳ Generazione riassunto con {service.upper()} in corso...")
+                summary = await summarize_with_ai(transcript, video_title, service)
+                
+                if summary:
+                    service_name = "OpenAI (gpt-4o-mini)" if service == "openai" else "Deepseek"
+                    response = f"📚 Riassunto ({service_name}): {video_title}\n\n{summary}"
+                    
+                    if len(response) > 4000:
+                        chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+                        for chunk in chunks:
+                            await query.message.reply_text(chunk)
+                    else:
+                        await query.message.reply_text(response)
+                    
+                    await query.edit_message_text(f"✅ Riassunto con {service_name} completato!")
                 else:
-                    await query.message.reply_text(response)
-                
-                # Update status message
-                await query.edit_message_text(f"✅ Riassunto con {service_name} completato!")
-            else:
-                await query.edit_message_text(f"❌ Non è stato possibile generare il riassunto con {service}.")
-                
+                    await query.edit_message_text(f"❌ Non è stato possibile generare il riassunto con {service}.")
+
     except Exception as e:
         logger.error(f"Error processing request: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        error_msg = str(e).lower()
         
-        # Messaggio di errore più informativo
-        if "quota" in str(e).lower() or "rate" in str(e).lower():
+        if "quota" in error_msg or "rate" in error_msg:
+            await query.edit_message_text("❌ Errore: limite di quota API raggiunto. Riprova più tardi.")
+        elif "auth" in error_msg or "key" in error_msg:
+            await query.edit_message_text("❌ Errore di autenticazione API. Contatta l'amministratore del bot.")
+        elif not context.user_data.get('using_proxy', False):
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Riprova con proxy", callback_data='retry_with_proxy'),
+                    InlineKeyboardButton("❌ Annulla", callback_data='cancel')
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                "❌ Errore: limite di quota API raggiunto. Riprova più tardi."
-            )
-        elif "auth" in str(e).lower() or "key" in str(e).lower():
-            await query.edit_message_text(
-                "❌ Errore di autenticazione API. Contatta l'amministratore del bot."
-            )
-        elif IS_HEROKU and "transcript" in str(e).lower():
-            await query.edit_message_text(
-                "❌ Errore nel recupero della trascrizione.\n\n"
-                "Su Heroku, prova ad utilizzare solo video che hanno già trascrizioni disponibili su YouTube."
-            )
-        elif IS_HEROKU:
-            await query.edit_message_text(
-                "❌ Si è verificato un errore durante l'elaborazione su Heroku.\n\n"
-                "Le limitazioni di Heroku potrebbero impedire il download dell'audio. "
-                "Prova con video che hanno trascrizioni già disponibili su YouTube."
+                "❌ Si è verificato un errore durante l'elaborazione.\n"
+                "Vuoi riprovare utilizzando un proxy?",
+                reply_markup=reply_markup
             )
         else:
             await query.edit_message_text(
-                "❌ Si è verificato un errore durante l'elaborazione della richiesta."
+                "❌ Si è verificato un errore durante l'elaborazione della richiesta, "
+                "anche utilizzando il proxy."
             )
+
+    if query.data == 'cancel':
+        await query.edit_message_text("⚠️ Operazione annullata.")
+        return
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log Errors caused by Updates."""
