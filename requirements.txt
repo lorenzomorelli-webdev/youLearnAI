@@ -6,7 +6,7 @@ openai==1.3.5
 requests==2.31.0
 
 # YouTube processing
-youtube-transcript-api==1.0.0
+youtube-transcript-api==1.0.1
 yt-dlp==2023.11.16
 
 # Utilities

@@ -2,6 +2,16 @@
 """
 YouLearn Telegram Bot - YouTube Video Transcription and Summarization Bot
 Integrates the YouLearn functionality with a Telegram bot interface.
+
+Per attivare la modalità debug in ambiente locale:
+1. Crea un file .env nella stessa directory di questo script
+2. Aggiungi le seguenti variabili:
+   DEBUG_MODE=true
+   FORCE_PROXY=true (opzionale, per usare sempre il proxy)
+   
+La modalità debug aggiunge pulsanti di test per verificare il funzionamento
+con e senza proxy, mostrando informazioni dettagliate sui tempi di risposta
+e sui risultati ottenuti.
 """
 
 import os
@@ -25,6 +35,7 @@ from tqdm import tqdm
 import dotenv
 from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -38,6 +49,16 @@ logger = logging.getLogger(__name__)
 
 # Rileva se l'app è in esecuzione su Heroku
 IS_HEROKU = "DYNO" in os.environ
+
+# Modalità debug per test proxy in locale
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
+FORCE_PROXY = os.getenv("FORCE_PROXY", "false").lower() == "true"
+
+# Log delle impostazioni di debug
+if not IS_HEROKU and DEBUG_MODE:
+    logger.info("🔍 Modalità debug attiva per ambiente locale")
+    if FORCE_PROXY:
+        logger.info("🔌 Uso forzato del proxy attivato per test")
 
 # Create output directory if it doesn't exist
 OUTPUT_DIR = Path("output")
@@ -227,32 +248,17 @@ class ProxyTranscriptApi:
         Ottiene la trascrizione di un video YouTube utilizzando il proxy se configurato.
         """
         if PROXIES:
-            # Configura temporaneamente il proxy per la richiesta
-            import http.client
-            import urllib.request
-            
-            # Salva le impostazioni originali
-            original_http_connection = http.client.HTTPConnection
-            original_https_connection = http.client.HTTPSConnection
-            original_opener = urllib.request._opener
-            
-            try:
-                # Configura il proxy
-                proxy_handler = urllib.request.ProxyHandler(PROXIES)
-                opener = urllib.request.build_opener(proxy_handler)
-                urllib.request.install_opener(opener)
-                
-                # Esegui la richiesta
-                logger.info(f"Richiesta trascrizione con proxy per video ID: {video_id}")
-                return YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
-            finally:
-                # Ripristina le impostazioni originali
-                urllib.request._opener = original_opener
-                http.client.HTTPConnection = original_http_connection
-                http.client.HTTPSConnection = original_https_connection
+            # Utilizziamo l'approccio ufficiale per i proxy
+            proxy_config = GenericProxyConfig(
+                http_url=PROXIES['http'],
+                https_url=PROXIES['https']
+            )
+            api = YouTubeTranscriptApi(proxy_config=proxy_config)
+            return api.get_transcript(video_id, languages=languages)
         else:
             # Usa la chiamata standard senza proxy
-            return YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+            api = YouTubeTranscriptApi()
+            return api.get_transcript(video_id, languages=languages)
     
     @staticmethod
     def list_transcripts(video_id):
@@ -260,32 +266,17 @@ class ProxyTranscriptApi:
         Elenca le trascrizioni disponibili per un video YouTube utilizzando il proxy se configurato.
         """
         if PROXIES:
-            # Configura temporaneamente il proxy per la richiesta
-            import http.client
-            import urllib.request
-            
-            # Salva le impostazioni originali
-            original_http_connection = http.client.HTTPConnection
-            original_https_connection = http.client.HTTPSConnection
-            original_opener = urllib.request._opener
-            
-            try:
-                # Configura il proxy
-                proxy_handler = urllib.request.ProxyHandler(PROXIES)
-                opener = urllib.request.build_opener(proxy_handler)
-                urllib.request.install_opener(opener)
-                
-                # Esegui la richiesta
-                logger.info(f"Richiesta lista trascrizioni con proxy per video ID: {video_id}")
-                return YouTubeTranscriptApi.list_transcripts(video_id)
-            finally:
-                # Ripristina le impostazioni originali
-                urllib.request._opener = original_opener
-                http.client.HTTPConnection = original_http_connection
-                http.client.HTTPSConnection = original_https_connection
+            # Utilizziamo l'approccio ufficiale per i proxy
+            proxy_config = GenericProxyConfig(
+                http_url=PROXIES['http'],
+                https_url=PROXIES['https']
+            )
+            api = YouTubeTranscriptApi(proxy_config=proxy_config)
+            return api.list_transcripts(video_id)
         else:
             # Usa la chiamata standard senza proxy
-            return YouTubeTranscriptApi.list_transcripts(video_id)
+            api = YouTubeTranscriptApi()
+            return api.list_transcripts(video_id)
 
 async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
     """
@@ -325,7 +316,7 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
                     # Prendi la prima trascrizione disponibile
                     for transcript_obj in transcript_list:
                         transcript_data = transcript_obj.fetch()
-                        transcript = ' '.join([item['text'] for item in transcript_data])
+                        transcript = ' '.join([item['text'] for item in transcript_data.snippets])
                         logger.info(f"Successfully retrieved transcript in {transcript_obj.language_code}")
                         return transcript
                         
@@ -675,7 +666,7 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Store video_id in user_data for later use
     context.user_data['video_id'] = video_id
     context.user_data['video_url'] = url
-    context.user_data['using_proxy'] = False  # Inizialmente non usiamo proxy
+    context.user_data['using_proxy'] = FORCE_PROXY  # Usa il proxy forzatamente se attivato
     
     # Create inline keyboard with initial options
     keyboard = [
@@ -685,9 +676,23 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
         ]
     ]
     
+    # Aggiungi opzione di test proxy in modalità debug
+    if not IS_HEROKU and DEBUG_MODE:
+        keyboard.append([
+            InlineKeyboardButton("🧪 Test con Proxy", callback_data='test_proxy'),
+            InlineKeyboardButton("🧪 Test senza Proxy", callback_data='test_no_proxy')
+        ])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Messaggio personalizzato in base alla modalità
+    message = "🎥 Cosa vuoi fare con questo video?"
+    if not IS_HEROKU and DEBUG_MODE:
+        proxy_status = "attivo" if FORCE_PROXY else "disattivato"
+        message += f"\n\n🔍 Modalità debug: proxy {proxy_status} per default"
+    
     await update.message.reply_text(
-        "🎥 Cosa vuoi fare con questo video?",
+        message,
         reply_markup=reply_markup
     )
 
@@ -726,11 +731,120 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 InlineKeyboardButton("📚 Riassunto", callback_data='summary_choice')
             ]
         ]
+        
+        # Aggiungi opzione di test proxy in modalità debug
+        if not IS_HEROKU and DEBUG_MODE:
+            keyboard.append([
+                InlineKeyboardButton("🧪 Test con Proxy", callback_data='test_proxy'),
+                InlineKeyboardButton("🧪 Test senza Proxy", callback_data='test_no_proxy')
+            ])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Messaggio personalizzato in base alla modalità
+        message = "🎥 Cosa vuoi fare con questo video?"
+        if not IS_HEROKU and DEBUG_MODE:
+            proxy_status = "attivo" if FORCE_PROXY else "disattivato"
+            message += f"\n\n🔍 Modalità debug: proxy {proxy_status} per default"
+        
         await query.edit_message_text(
-            "🎥 Cosa vuoi fare con questo video?",
+            message,
             reply_markup=reply_markup
         )
+        return
+
+    if query.data == 'test_proxy' or query.data == 'test_no_proxy':
+        # Imposta l'uso del proxy in base alla scelta
+        context.user_data['using_proxy'] = (query.data == 'test_proxy')
+        context.user_data['last_action'] = 'transcript'  # Default a trascrizione per test
+        
+        proxy_status = "attivato" if context.user_data['using_proxy'] else "disattivato"
+        await query.edit_message_text(f"⏳ Test in corso con proxy {proxy_status}...")
+        
+        try:
+            video_title = get_video_title(video_id)
+            
+            # Configura il proxy in base alla scelta
+            if context.user_data['using_proxy']:
+                PROXIES = {
+                    'http': PROXY_URL,
+                    'https': PROXY_URL
+                } if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD else None
+            else:
+                PROXIES = None
+            
+            # Ottieni la trascrizione
+            start_time = time.time()
+            transcript = await get_transcript_from_youtube(video_id)
+            elapsed_time = time.time() - start_time
+            
+            if transcript:
+                # Mostra solo un estratto della trascrizione per il test
+                transcript_preview = transcript[:200] + "..." if len(transcript) > 200 else transcript
+                
+                # Prepara il messaggio di debug
+                debug_info = (
+                    f"✅ Test completato con successo!\n\n"
+                    f"🔌 Proxy: {proxy_status}\n"
+                    f"⏱️ Tempo impiegato: {elapsed_time:.2f} secondi\n"
+                    f"📊 Lunghezza trascrizione: {len(transcript)} caratteri\n\n"
+                    f"📝 Anteprima trascrizione:\n{transcript_preview}\n\n"
+                )
+                
+                # Aggiungi pulsanti per continuare
+                keyboard = [
+                    [
+                        InlineKeyboardButton("📝 Trascrizione completa", callback_data='transcript'),
+                        InlineKeyboardButton("📚 Riassunto", callback_data='summary_choice')
+                    ],
+                    [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(debug_info, reply_markup=reply_markup)
+            else:
+                # Gestisci il caso in cui la trascrizione non è disponibile
+                error_info = (
+                    f"❌ Test fallito - Nessuna trascrizione disponibile\n\n"
+                    f"🔌 Proxy: {proxy_status}\n"
+                    f"⏱️ Tempo impiegato: {elapsed_time:.2f} secondi\n\n"
+                )
+                
+                # Offri opzioni per riprovare
+                keyboard = [
+                    [
+                        InlineKeyboardButton("🔄 Riprova con proxy", callback_data='test_proxy'),
+                        InlineKeyboardButton("🔄 Riprova senza proxy", callback_data='test_no_proxy')
+                    ],
+                    [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(error_info, reply_markup=reply_markup)
+        
+        except Exception as e:
+            # Gestisci errori durante il test
+            error_msg = str(e)
+            logger.error(f"Error during proxy test: {error_msg}")
+            
+            error_info = (
+                f"❌ Test fallito - Errore\n\n"
+                f"🔌 Proxy: {proxy_status}\n"
+                f"⚠️ Errore: {error_msg[:200]}...\n\n"
+            )
+            
+            # Offri opzioni per riprovare
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Riprova con proxy", callback_data='test_proxy'),
+                    InlineKeyboardButton("🔄 Riprova senza proxy", callback_data='test_no_proxy')
+                ],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(error_info, reply_markup=reply_markup)
+        
         return
 
     if query.data == 'retry_with_proxy':
