@@ -76,6 +76,30 @@ PROXY_PASSWORD = os.getenv("PROXY_PASSWORD")
 PROXY_HOST = os.getenv("PROXY_HOST", "gate.smartproxy.com")
 PROXY_PORT = os.getenv("PROXY_PORT", "10001")
 
+# Whitelist configuration
+ALLOWED_USERS = os.getenv("ALLOWED_USERS", "")
+
+def is_user_allowed(user_id: int) -> bool:
+    """
+    Check if a user is allowed to use the bot based on their Telegram ID.
+    
+    Args:
+        user_id (int): The Telegram user ID to check
+        
+    Returns:
+        bool: True if the user is allowed, False otherwise
+    """
+    if not ALLOWED_USERS:
+        logger.warning("ALLOWED_USERS environment variable is not set. No users are allowed.")
+        return False
+        
+    try:
+        allowed_ids = [int(id.strip()) for id in ALLOWED_USERS.split(",") if id.strip()]
+        return user_id in allowed_ids
+    except ValueError as e:
+        logger.error(f"Error parsing ALLOWED_USERS: {e}")
+        return False
+
 # Configura il proxy solo se tutte le variabili necessarie sono presenti
 if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD:
     PROXY_URL = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
@@ -579,6 +603,13 @@ async def summarize_with_ai(transcript: str, video_title: str, service: Literal[
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
+    if not is_user_allowed(update.effective_user.id):
+        await update.message.reply_text(
+            "❌ Non sei autorizzato ad utilizzare questo bot.\n\n"
+            f"Il tuo Telegram ID è: {update.effective_user.id}"
+        )
+        return
+        
     welcome_message = (
         "👋 Ciao! Sono YouLearn Bot.\n\n"
         "Inviami il link di un video YouTube e ti aiuterò a:\n"
@@ -590,6 +621,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /help is issued."""
+    if not is_user_allowed(update.effective_user.id):
+        await update.message.reply_text(
+            "❌ Non sei autorizzato ad utilizzare questo bot.\n\n"
+            f"Il tuo Telegram ID è: {update.effective_user.id}"
+        )
+        return
+        
     help_text = (
         "🔍 Come usare YouLearn Bot:\n\n"
         "1. Invia il link di un video YouTube\n"
@@ -632,6 +670,13 @@ async def check_transcript_availability(video_id: str) -> bool:
 
 async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Process a YouTube URL and show action buttons."""
+    if not is_user_allowed(update.effective_user.id):
+        await update.message.reply_text(
+            "❌ Non sei autorizzato ad utilizzare questo bot.\n\n"
+            f"Il tuo Telegram ID è: {update.effective_user.id}"
+        )
+        return
+        
     url = update.message.text
     video_id = extract_video_id(url)
     
@@ -681,6 +726,15 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle button presses."""
     query = update.callback_query
+    
+    if not is_user_allowed(update.effective_user.id):
+        await query.answer("❌ Non sei autorizzato ad utilizzare questo bot.", show_alert=True)
+        await query.edit_message_text(
+            "❌ Non sei autorizzato ad utilizzare questo bot.\n\n"
+            f"Il tuo Telegram ID è: {update.effective_user.id}"
+        )
+        return
+        
     await query.answer()
     
     video_id = context.user_data.get('video_id')

@@ -1,14 +1,68 @@
 # YouLearn Bot
 
-Un bot Telegram che permette di ottenere trascrizioni e riassunti di video YouTube.
+YouLearn è un bot Telegram che ti permette di ottenere trascrizioni e riassunti di video YouTube in modo semplice e veloce.
 
 ## Funzionalità
 
-- 📝 Ottieni la trascrizione di qualsiasi video YouTube
-- 📚 Genera riassunti intelligenti del contenuto con OpenAI (gpt-4o-mini) o Deepseek
-- 🌐 Supporto per video con sottotitoli in diverse lingue
-- 🤖 Trascrizione automatica tramite OpenAI Whisper per video senza sottotitoli
-- 🔄 Possibilità di scegliere tra diversi modelli AI per i riassunti
+- 📝 Trascrizione automatica di video YouTube
+- 📚 Generazione di riassunti utilizzando AI (OpenAI GPT-4 o Deepseek)
+- 🎥 Supporto per video standard e Shorts
+- 🔒 Accesso limitato a utenti autorizzati
+
+## Come Ottenere l'Accesso
+
+Il bot è disponibile solo per utenti autorizzati. Per richiedere l'accesso:
+
+1. **Trova il tuo Telegram ID** usando uno dei seguenti metodi:
+
+   - Avvia il bot [@userinfobot](https://t.me/userinfobot) o [@myidbot](https://t.me/myidbot) su Telegram
+   - Invia un messaggio al nostro bot - ti risponderà con il tuo ID anche se non sei autorizzato
+   - In alternativa, puoi trovare il tuo ID visitando [web.telegram.org](https://web.telegram.org), accedendo al tuo account e cercando il numero nella barra degli indirizzi
+
+2. **Contatta l'amministratore** fornendo:
+   - Il tuo Telegram ID
+   - Il motivo per cui desideri utilizzare il bot
+   - Il tuo nome/username Telegram
+
+## Configurazione (per amministratori)
+
+Per configurare il bot, è necessario impostare le seguenti variabili d'ambiente:
+
+```bash
+# Configurazione base
+TELEGRAM_TOKEN=your_bot_token
+OPENAI_API_KEY=your_openai_api_key
+DEEPSEEK_API_KEY=your_deepseek_api_key
+
+# Whitelist utenti (ID separati da virgola)
+ALLOWED_USERS=123456789,987654321,200074582
+
+# Configurazione proxy (opzionale)
+USE_PROXY=false
+PROXY_USERNAME=your_proxy_username
+PROXY_PASSWORD=your_proxy_password
+PROXY_HOST=gate.smartproxy.com
+PROXY_PORT=10001
+
+# Modalità debug (opzionale)
+DEBUG_MODE=false
+FORCE_PROXY=false
+```
+
+## Come Usare il Bot
+
+1. Avvia il bot su Telegram
+2. Invia un link YouTube (video standard o Shorts)
+3. Scegli se vuoi:
+   - 📝 La trascrizione del video
+   - 📚 Un riassunto del contenuto
+
+## Note Tecniche
+
+- Il bot utilizza la YouTube Transcript API per ottenere le trascrizioni
+- I riassunti possono essere generati usando OpenAI GPT-4 o Deepseek
+- È possibile configurare un proxy per aggirare eventuali limitazioni geografiche
+- La modalità debug permette di testare il funzionamento con e senza proxy
 
 ## Configurazione
 
