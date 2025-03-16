@@ -1145,7 +1145,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log Errors caused by Updates."""
     logger.error(f"Update {update} caused error {context.error}")
-    if update.effective_message:
+    
+    # Verifica se l'errore è relativo a più istanze del bot in esecuzione
+    if "terminated by other getUpdates request" in str(context.error):
+        logger.error("ERRORE CRITICO: Un'altra istanza del bot è già in esecuzione. Termina tutte le altre istanze e riavvia.")
+        return
+        
+    # Verifica che update non sia None prima di accedere ai suoi attributi
+    if update and update.effective_message:
         await update.effective_message.reply_text(
             "❌ Si è verificato un errore. Per favore, riprova più tardi."
         )
