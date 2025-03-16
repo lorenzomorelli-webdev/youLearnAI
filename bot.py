@@ -3,8 +3,8 @@
 YouLearn Telegram Bot - YouTube Video Transcription and Summarization Bot
 Integrates the YouLearn functionality with a Telegram bot interface.
 
-Per attivare la modalità debug in ambiente locale:
-1. Crea un file .env nella stessa directory di questo script
+Per attivare la modalità debug:
+1. Crea un file .env nella stessa directory di questo script (o imposta le variabili d'ambiente su Heroku)
 2. Aggiungi le seguenti variabili:
    DEBUG_MODE=true
    FORCE_PROXY=true (opzionale, per usare sempre il proxy)
@@ -55,8 +55,8 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 FORCE_PROXY = os.getenv("FORCE_PROXY", "false").lower() == "true"
 
 # Log delle impostazioni di debug
-if not IS_HEROKU and DEBUG_MODE:
-    logger.info("🔍 Modalità debug attiva per ambiente locale")
+if DEBUG_MODE:
+    logger.info("🔍 Modalità debug attiva")
     if FORCE_PROXY:
         logger.info("🔌 Uso forzato del proxy attivato per test")
 
@@ -677,7 +677,7 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
     ]
     
     # Aggiungi opzione di test proxy in modalità debug
-    if not IS_HEROKU and DEBUG_MODE:
+    if DEBUG_MODE:
         keyboard.append([
             InlineKeyboardButton("🧪 Test con Proxy", callback_data='test_proxy'),
             InlineKeyboardButton("🧪 Test senza Proxy", callback_data='test_no_proxy')
@@ -687,7 +687,7 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # Messaggio personalizzato in base alla modalità
     message = "🎥 Cosa vuoi fare con questo video?"
-    if not IS_HEROKU and DEBUG_MODE:
+    if DEBUG_MODE:
         proxy_status = "attivo" if FORCE_PROXY else "disattivato"
         message += f"\n\n🔍 Modalità debug: proxy {proxy_status} per default"
     
@@ -733,7 +733,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ]
         
         # Aggiungi opzione di test proxy in modalità debug
-        if not IS_HEROKU and DEBUG_MODE:
+        if DEBUG_MODE:
             keyboard.append([
                 InlineKeyboardButton("🧪 Test con Proxy", callback_data='test_proxy'),
                 InlineKeyboardButton("🧪 Test senza Proxy", callback_data='test_no_proxy')
@@ -743,7 +743,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         # Messaggio personalizzato in base alla modalità
         message = "🎥 Cosa vuoi fare con questo video?"
-        if not IS_HEROKU and DEBUG_MODE:
+        if DEBUG_MODE:
             proxy_status = "attivo" if FORCE_PROXY else "disattivato"
             message += f"\n\n🔍 Modalità debug: proxy {proxy_status} per default"
         
