@@ -83,9 +83,28 @@ if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD:
         'http': PROXY_URL,
         'https': PROXY_URL
     }
-    logger.info(f"Proxy configurato: {PROXY_HOST}:{PROXY_PORT}")
+    
+    # Configura il proxy a livello globale per tutte le richieste HTTP
+    os.environ['HTTP_PROXY'] = PROXY_URL
+    os.environ['HTTPS_PROXY'] = PROXY_URL
+    
+    # Configura il proxy per le librerie che usano requests
+    requests.utils.default_headers()
+    session = requests.Session()
+    session.proxies.update(PROXIES)
+    requests.Session = lambda: session
+    
+    logger.info(f"Proxy configurato globalmente: {PROXY_HOST}:{PROXY_PORT}")
     logger.info(f"Ambiente Heroku: {IS_HEROKU}")
     logger.info("Credenziali proxy presenti e configurate correttamente")
+    
+    # Verifica la configurazione del proxy
+    try:
+        test_response = session.get('https://api.ipify.org?format=json')
+        logger.info(f"Test connessione proxy - IP utilizzato: {test_response.json().get('ip')}")
+        logger.info(f"Test connessione proxy - Status code: {test_response.status_code}")
+    except Exception as e:
+        logger.error(f"Errore nel test del proxy: {e}")
 else:
     PROXIES = None
     if USE_PROXY:
@@ -125,31 +144,17 @@ if not OPENAI_API_KEY:
 # Funzione per creare una sessione requests con proxy per YouTube
 def get_youtube_session():
     """
-    Crea una sessione requests configurata per YouTube con proxy se disponibile.
-    Questo permette di utilizzare il proxy solo per le chiamate a YouTube.
+    Crea una sessione requests configurata per YouTube.
+    Utilizza il proxy configurato globalmente.
     """
+    # Utilizziamo la sessione globale che ha già il proxy configurato
     session = requests.Session()
     
     # Imposta un User-Agent casuale
     selected_user_agent = random.choice(USER_AGENTS)
     session.headers.update({'User-Agent': selected_user_agent})
     
-    # Aggiungi il proxy solo se configurato
-    if PROXIES:
-        session.proxies.update(PROXIES)
-        logger.info(f"Sessione YouTube creata con proxy: {PROXY_HOST}")
-        logger.info(f"User-Agent utilizzato: {selected_user_agent}")
-        if IS_HEROKU:
-            logger.info("Esecuzione su Heroku - Verificando configurazione proxy...")
-            try:
-                # Test della connessione proxy
-                test_response = session.get('https://api.ipify.org?format=json')
-                logger.info(f"Test connessione proxy - IP utilizzato: {test_response.json().get('ip')}")
-                logger.info(f"Test connessione proxy - Status code: {test_response.status_code}")
-            except Exception as e:
-                logger.error(f"Errore nel test del proxy su Heroku: {e}")
-    else:
-        logger.info(f"Sessione YouTube creata senza proxy. User-Agent: {selected_user_agent}")
+    logger.info(f"Sessione YouTube creata. User-Agent: {selected_user_agent}")
     
     return session
 
@@ -199,7 +204,7 @@ def extract_video_id(url: str) -> Optional[str]:
 def get_video_title(video_id: str) -> str:
     """
     Get the title of a YouTube video using yt-dlp con configurazioni anti-bot.
-    Usa user-agent random e proxy se disponibile.
+    Usa user-agent random e proxy configurato globalmente.
     """
     # Rotazione degli user agent per sembrare più "umani"
     selected_user_agent = random.choice(USER_AGENTS)
@@ -219,10 +224,7 @@ def get_video_title(video_id: str) -> str:
         'max_sleep_interval': 5,
     }
     
-    # Aggiungi proxy se configurato
-    if PROXIES:
-        ydl_opts['proxy'] = PROXIES['https']
-        logger.info("Utilizzo proxy per il recupero del titolo del video")
+    # Il proxy è già configurato a livello globale tramite variabili d'ambiente
     
     # Try to get video info
     try:
@@ -247,36 +249,16 @@ class ProxyTranscriptApi:
         """
         Ottiene la trascrizione di un video YouTube utilizzando il proxy se configurato.
         """
-        if PROXIES:
-            # Utilizziamo l'approccio ufficiale per i proxy
-            proxy_config = GenericProxyConfig(
-                http_url=PROXIES['http'],
-                https_url=PROXIES['https']
-            )
-            api = YouTubeTranscriptApi(proxy_config=proxy_config)
-            return api.get_transcript(video_id, languages=languages)
-        else:
-            # Usa la chiamata standard senza proxy
-            api = YouTubeTranscriptApi()
-            return api.get_transcript(video_id, languages=languages)
+        # Il proxy è già configurato a livello globale, quindi non serve specificarlo qui
+        return YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
     
     @staticmethod
     def list_transcripts(video_id):
         """
         Elenca le trascrizioni disponibili per un video YouTube utilizzando il proxy se configurato.
         """
-        if PROXIES:
-            # Utilizziamo l'approccio ufficiale per i proxy
-            proxy_config = GenericProxyConfig(
-                http_url=PROXIES['http'],
-                https_url=PROXIES['https']
-            )
-            api = YouTubeTranscriptApi(proxy_config=proxy_config)
-            return api.list_transcripts(video_id)
-        else:
-            # Usa la chiamata standard senza proxy
-            api = YouTubeTranscriptApi()
-            return api.list_transcripts(video_id)
+        # Il proxy è già configurato a livello globale, quindi non serve specificarlo qui
+        return YouTubeTranscriptApi.list_transcripts(video_id)
 
 async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
     """
@@ -340,13 +322,12 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
 async def download_audio(video_id: str) -> Optional[str]:
     """
     Download audio from a YouTube video with enhanced anti-bot measures.
-    Usa user-agent diversi, proxy e tecniche avanzate di evasione del rilevamento.
-    Adattato per funzionare su Heroku.
+    Usa user-agent diversi e tecniche avanzate di evasione del rilevamento.
+    Il proxy è configurato globalmente.
     """
     try:
         logger.info(f"Avvio download audio per video ID: {video_id}")
         logger.info(f"Ambiente: {'Heroku' if IS_HEROKU else 'Non-Heroku'}")
-        logger.info(f"Proxy attivo: {bool(PROXIES)}")
         
         # Create a temporary file
         temp_dir = tempfile.gettempdir()
@@ -412,10 +393,7 @@ async def download_audio(video_id: str) -> Optional[str]:
             'ratelimit': 1000000,  # 1 MB/s
         }
         
-        # Aggiungi proxy se configurato
-        if PROXIES:
-            ydl_opts['proxy'] = PROXIES['https']
-            logger.info("Utilizzo proxy per il download dell'audio")
+        # Il proxy è già configurato a livello globale tramite variabili d'ambiente
         
         # Se siamo su Heroku, aggiungi altre opzioni specifiche
         if IS_HEROKU:
@@ -702,7 +680,6 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle button presses."""
-    global PROXIES
     query = update.callback_query
     await query.answer()
     
@@ -773,12 +750,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             selected_user_agent = random.choice(USER_AGENTS)
             session.headers.update({'User-Agent': selected_user_agent})
             
-            if use_proxy and USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD:
-                proxy_url = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
-                session.proxies.update({
-                    'http': proxy_url,
-                    'https': proxy_url
-                })
+            # Per il test senza proxy, disabilitiamo temporaneamente il proxy
+            if not use_proxy:
+                session.proxies.clear()
             
             # Misura il tempo di risposta
             start_time = time.time()
@@ -854,28 +828,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if query.data == 'test_proxy' or query.data == 'test_no_proxy':
         # Imposta l'uso del proxy in base alla scelta
-        context.user_data['using_proxy'] = (query.data == 'test_proxy')
+        use_proxy = (query.data == 'test_proxy')
         context.user_data['last_action'] = 'transcript'  # Default a trascrizione per test
         
-        proxy_status = "attivato" if context.user_data['using_proxy'] else "disattivato"
+        proxy_status = "attivato" if use_proxy else "disattivato"
         await query.edit_message_text(f"⏳ Test in corso con proxy {proxy_status}...")
         
         try:
             video_title = get_video_title(video_id)
             
-            # Configura il proxy in base alla scelta
-            if context.user_data['using_proxy']:
-                PROXIES = {
-                    'http': PROXY_URL,
-                    'https': PROXY_URL
-                } if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD else None
-            else:
-                PROXIES = None
+            # Per il test senza proxy, disabilitiamo temporaneamente il proxy
+            if not use_proxy:
+                # Salva le variabili d'ambiente originali
+                original_http_proxy = os.environ.get('HTTP_PROXY')
+                original_https_proxy = os.environ.get('HTTPS_PROXY')
+                
+                # Rimuovi temporaneamente le variabili d'ambiente del proxy
+                if 'HTTP_PROXY' in os.environ:
+                    del os.environ['HTTP_PROXY']
+                if 'HTTPS_PROXY' in os.environ:
+                    del os.environ['HTTPS_PROXY']
             
             # Ottieni la trascrizione
             start_time = time.time()
             transcript = await get_transcript_from_youtube(video_id)
             elapsed_time = time.time() - start_time
+            
+            # Ripristina le variabili d'ambiente del proxy se necessario
+            if not use_proxy and original_http_proxy:
+                os.environ['HTTP_PROXY'] = original_http_proxy
+            if not use_proxy and original_https_proxy:
+                os.environ['HTTPS_PROXY'] = original_https_proxy
             
             if transcript:
                 # Mostra solo un estratto della trascrizione per il test
@@ -947,25 +930,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if query.data == 'retry_with_proxy':
-        context.user_data['using_proxy'] = True
-        last_action = context.user_data.get('last_action')
-        await query.edit_message_text("⏳ Riprovo con proxy...")
+        # Non serve più questa funzione poiché il proxy è configurato globalmente
+        await query.edit_message_text("⏳ Riprovo l'operazione...")
         
         try:
             video_title = get_video_title(video_id)
+            last_action = context.user_data.get('last_action')
             
-            # Configura il proxy
-            PROXIES = {
-                'http': PROXY_URL,
-                'https': PROXY_URL
-            } if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD else None
-            
-            # Ottieni la trascrizione con il proxy
+            # Ottieni la trascrizione
             transcript = await get_transcript_from_youtube(video_id)
             
             if transcript is None:
                 await query.edit_message_text(
-                    "❌ Non è stato possibile ottenere la trascrizione anche utilizzando il proxy."
+                    "❌ Non è stato possibile ottenere la trascrizione."
                 )
                 return
             
@@ -1011,9 +988,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await query.edit_message_text(f"❌ Non è stato possibile generare il riassunto con {service}.")
         
         except Exception as e:
-            logger.error(f"Error processing request with proxy: {e}")
+            logger.error(f"Error processing request: {e}")
             await query.edit_message_text(
-                "❌ Si è verificato un errore durante l'elaborazione della richiesta con il proxy."
+                "❌ Si è verificato un errore durante l'elaborazione della richiesta."
             )
         return
 
@@ -1024,52 +1001,41 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data['last_action'] = query.data
             await query.edit_message_text("⏳ Elaborazione in corso...")
             
-            # Primo tentativo di ottenere la trascrizione (senza proxy se non specificato)
+            # Ottieni la trascrizione
             transcript = None
             try:
-                if context.user_data.get('using_proxy', False):
-                    PROXIES = {
-                        'http': PROXY_URL,
-                        'https': PROXY_URL
-                    } if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD else None
-                else:
-                    PROXIES = None
-                
                 transcript = await get_transcript_from_youtube(video_id)
             except Exception as e:
-                if not context.user_data.get('using_proxy', False):
-                    # Se fallisce senza proxy, offri l'opzione di riprovare con proxy
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("🔄 Riprova con proxy", callback_data='retry_with_proxy'),
-                            InlineKeyboardButton("❌ Annulla", callback_data='cancel')
-                        ]
+                # Offri l'opzione di riprovare
+                keyboard = [
+                    [
+                        InlineKeyboardButton("🔄 Riprova", callback_data='retry_with_proxy'),
+                        InlineKeyboardButton("❌ Annulla", callback_data='cancel')
                     ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    await query.edit_message_text(
-                        "❌ Non è stato possibile ottenere la trascrizione.\n"
-                        "Vuoi riprovare utilizzando un proxy?",
-                        reply_markup=reply_markup
-                    )
-                    return
-                else:
-                    raise e
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    "❌ Non è stato possibile ottenere la trascrizione.\n"
+                    "Vuoi riprovare?",
+                    reply_markup=reply_markup
+                )
+                return
 
             if transcript is None:
-                if not context.user_data.get('using_proxy', False):
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("🔄 Riprova con proxy", callback_data='retry_with_proxy'),
-                            InlineKeyboardButton("❌ Annulla", callback_data='cancel')
-                        ]
+                # Offri l'opzione di riprovare
+                keyboard = [
+                    [
+                        InlineKeyboardButton("🔄 Riprova", callback_data='retry_with_proxy'),
+                        InlineKeyboardButton("❌ Annulla", callback_data='cancel')
                     ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    await query.edit_message_text(
-                        "❌ Non è stato possibile ottenere la trascrizione.\n"
-                        "Vuoi riprovare utilizzando un proxy?",
-                        reply_markup=reply_markup
-                    )
-                    return
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    "❌ Non è stato possibile ottenere la trascrizione.\n"
+                    "Vuoi riprovare?",
+                    reply_markup=reply_markup
+                )
+                return
 
             if query.data == 'transcript':
                 # Invia la trascrizione
@@ -1119,23 +1085,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("❌ Errore: limite di quota API raggiunto. Riprova più tardi.")
         elif "auth" in error_msg or "key" in error_msg:
             await query.edit_message_text("❌ Errore di autenticazione API. Contatta l'amministratore del bot.")
-        elif not context.user_data.get('using_proxy', False):
+        else:
             keyboard = [
                 [
-                    InlineKeyboardButton("🔄 Riprova con proxy", callback_data='retry_with_proxy'),
+                    InlineKeyboardButton("🔄 Riprova", callback_data='retry_with_proxy'),
                     InlineKeyboardButton("❌ Annulla", callback_data='cancel')
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
                 "❌ Si è verificato un errore durante l'elaborazione.\n"
-                "Vuoi riprovare utilizzando un proxy?",
+                "Vuoi riprovare?",
                 reply_markup=reply_markup
-            )
-        else:
-            await query.edit_message_text(
-                "❌ Si è verificato un errore durante l'elaborazione della richiesta, "
-                "anche utilizzando il proxy."
             )
 
     if query.data == 'cancel':
