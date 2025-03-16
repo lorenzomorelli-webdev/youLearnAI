@@ -693,6 +693,7 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle button presses."""
+    global PROXIES
     query = update.callback_query
     await query.answer()
     
@@ -741,7 +742,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             video_title = get_video_title(video_id)
             
             # Configura il proxy
-            global PROXIES
             PROXIES = {
                 'http': PROXY_URL,
                 'https': PROXY_URL
@@ -815,7 +815,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             transcript = None
             try:
                 if context.user_data.get('using_proxy', False):
-                    global PROXIES
                     PROXIES = {
                         'http': PROXY_URL,
                         'https': PROXY_URL
