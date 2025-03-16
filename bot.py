@@ -734,11 +734,75 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if query.data == 'retry_with_proxy':
         context.user_data['using_proxy'] = True
-        if context.user_data.get('last_action') == 'transcript':
-            query.data = 'transcript'
-        elif context.user_data.get('last_action') in ['summary_openai', 'summary_deepseek']:
-            query.data = context.user_data['last_action']
+        last_action = context.user_data.get('last_action')
         await query.edit_message_text("⏳ Riprovo con proxy...")
+        
+        try:
+            video_title = get_video_title(video_id)
+            
+            # Configura il proxy
+            global PROXIES
+            PROXIES = {
+                'http': PROXY_URL,
+                'https': PROXY_URL
+            } if USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD else None
+            
+            # Ottieni la trascrizione con il proxy
+            transcript = await get_transcript_from_youtube(video_id)
+            
+            if transcript is None:
+                await query.edit_message_text(
+                    "❌ Non è stato possibile ottenere la trascrizione anche utilizzando il proxy."
+                )
+                return
+            
+            # Procedi in base all'azione originale
+            if last_action == 'transcript':
+                # Invia la trascrizione
+                chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        header = f"📝 Trascrizione: {video_title}\n\n"
+                        await query.message.reply_text(header + chunk)
+                    else:
+                        await query.message.reply_text(chunk)
+                await query.edit_message_text("✅ Trascrizione completata!")
+            
+            elif last_action in ['summary_openai', 'summary_deepseek']:
+                service = "openai" if last_action == 'summary_openai' else "deepseek"
+                
+                # Verifica disponibilità API key
+                if service == "openai" and not OPENAI_API_KEY:
+                    await query.edit_message_text("❌ OpenAI API key non configurata. Contatta l'amministratore del bot.")
+                    return
+                elif service == "deepseek" and not DEEPSEEK_API_KEY:
+                    await query.edit_message_text("❌ Deepseek API key non configurata. Contatta l'amministratore del bot.")
+                    return
+
+                await query.edit_message_text(f"⏳ Generazione riassunto con {service.upper()} in corso...")
+                summary = await summarize_with_ai(transcript, video_title, service)
+                
+                if summary:
+                    service_name = "OpenAI (gpt-4o-mini)" if service == "openai" else "Deepseek"
+                    response = f"📚 Riassunto ({service_name}): {video_title}\n\n{summary}"
+                    
+                    if len(response) > 4000:
+                        chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+                        for chunk in chunks:
+                            await query.message.reply_text(chunk)
+                    else:
+                        await query.message.reply_text(response)
+                    
+                    await query.edit_message_text(f"✅ Riassunto con {service_name} completato!")
+                else:
+                    await query.edit_message_text(f"❌ Non è stato possibile generare il riassunto con {service}.")
+        
+        except Exception as e:
+            logger.error(f"Error processing request with proxy: {e}")
+            await query.edit_message_text(
+                "❌ Si è verificato un errore durante l'elaborazione della richiesta con il proxy."
+            )
+        return
 
     try:
         video_title = get_video_title(video_id)
