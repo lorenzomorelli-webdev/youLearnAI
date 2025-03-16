@@ -682,6 +682,10 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
             InlineKeyboardButton("🧪 Test con Proxy", callback_data='test_proxy'),
             InlineKeyboardButton("🧪 Test senza Proxy", callback_data='test_no_proxy')
         ])
+        keyboard.append([
+            InlineKeyboardButton("🔍 Verifica IP con Proxy", callback_data='check_ip_proxy'),
+            InlineKeyboardButton("🔍 Verifica IP senza Proxy", callback_data='check_ip_no_proxy')
+        ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -738,6 +742,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 InlineKeyboardButton("🧪 Test con Proxy", callback_data='test_proxy'),
                 InlineKeyboardButton("🧪 Test senza Proxy", callback_data='test_no_proxy')
             ])
+            keyboard.append([
+                InlineKeyboardButton("🔍 Verifica IP con Proxy", callback_data='check_ip_proxy'),
+                InlineKeyboardButton("🔍 Verifica IP senza Proxy", callback_data='check_ip_no_proxy')
+            ])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -751,6 +759,97 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             message,
             reply_markup=reply_markup
         )
+        return
+
+    if query.data in ['check_ip_proxy', 'check_ip_no_proxy']:
+        # Imposta l'uso del proxy in base alla scelta
+        use_proxy = (query.data == 'check_ip_proxy')
+        proxy_status = "attivato" if use_proxy else "disattivato"
+        await query.edit_message_text(f"⏳ Verifica IP in corso con proxy {proxy_status}...")
+        
+        try:
+            # Configura la sessione con o senza proxy
+            session = requests.Session()
+            selected_user_agent = random.choice(USER_AGENTS)
+            session.headers.update({'User-Agent': selected_user_agent})
+            
+            if use_proxy and USE_PROXY and PROXY_USERNAME and PROXY_PASSWORD:
+                proxy_url = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
+                session.proxies.update({
+                    'http': proxy_url,
+                    'https': proxy_url
+                })
+            
+            # Misura il tempo di risposta
+            start_time = time.time()
+            response = session.get('https://api.ipify.org?format=json')
+            elapsed_time = time.time() - start_time
+            
+            if response.status_code == 200:
+                ip_data = response.json()
+                ip_address = ip_data.get('ip', 'Non disponibile')
+                
+                # Prepara il messaggio di debug
+                debug_info = (
+                    f"✅ Verifica IP completata!\n\n"
+                    f"🔌 Proxy: {proxy_status}\n"
+                    f"🌐 Indirizzo IP: {ip_address}\n"
+                    f"⏱️ Tempo di risposta: {elapsed_time:.2f} secondi\n"
+                    f"🖥️ Ambiente: {'Heroku' if IS_HEROKU else 'Locale/Altro'}\n\n"
+                )
+                
+                # Aggiungi pulsanti per continuare
+                keyboard = [
+                    [
+                        InlineKeyboardButton("🔄 Riprova con proxy", callback_data='check_ip_proxy'),
+                        InlineKeyboardButton("🔄 Riprova senza proxy", callback_data='check_ip_no_proxy')
+                    ],
+                    [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(debug_info, reply_markup=reply_markup)
+            else:
+                error_info = (
+                    f"❌ Verifica IP fallita\n\n"
+                    f"🔌 Proxy: {proxy_status}\n"
+                    f"⚠️ Status code: {response.status_code}\n"
+                    f"⏱️ Tempo di risposta: {elapsed_time:.2f} secondi\n"
+                )
+                
+                # Offri opzioni per riprovare
+                keyboard = [
+                    [
+                        InlineKeyboardButton("🔄 Riprova", callback_data=query.data),
+                        InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(error_info, reply_markup=reply_markup)
+        
+        except Exception as e:
+            # Gestisci errori durante la verifica
+            error_msg = str(e)
+            logger.error(f"Error during IP check: {error_msg}")
+            
+            error_info = (
+                f"❌ Verifica IP fallita - Errore\n\n"
+                f"🔌 Proxy: {proxy_status}\n"
+                f"⚠️ Errore: {error_msg[:200]}...\n\n"
+            )
+            
+            # Offri opzioni per riprovare
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Riprova", callback_data=query.data),
+                    InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(error_info, reply_markup=reply_markup)
+        
         return
 
     if query.data == 'test_proxy' or query.data == 'test_no_proxy':
