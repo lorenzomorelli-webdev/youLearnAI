@@ -550,7 +550,7 @@ async def summarize_with_ai(transcript: str, video_title: str, service: Literal[
     """Generate a summary of the transcript using either OpenAI's GPT or Deepseek."""
     
     # Prepare the prompt
-    system_prompt = "You are an expert at summarizing video content. Create a comprehensive summary of the following video transcript."
+    system_prompt = "You are an expert at summarizing video content in Italian. Create a comprehensive summary of the following video transcript."
     user_prompt = f"Title: {video_title}\n\nTranscript:\n{transcript}\n\nPlease provide a detailed summary of this video's content, highlighting the main points, key insights, and important details."
     
     try:
