@@ -37,6 +37,12 @@ from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig
 
+# Semafori per limitare le richieste concorrenti
+TRANSCRIPT_SEMAPHORE = asyncio.Semaphore(5)  # Max 5 richieste di trascrizione simultanee
+SUMMARY_SEMAPHORE = asyncio.Semaphore(3)     # Max 3 richieste di riassunto simultanee
+GLOBAL_REQUEST_SEMAPHORE = asyncio.Semaphore(5)  # Limite di richieste globali simultanee
+BUTTON_CALLBACK_TIMEOUT = 180.0  # Timeout per operazioni dei callback in secondi
+
 # Load environment variables
 dotenv.load_dotenv()
 
@@ -290,58 +296,66 @@ async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
     Usa diverse strategie e gestisce le particolarità di Heroku.
     Utilizza il proxy se configurato.
     """
-    try:
-        logger.info(f"Richiesta trascrizione per video ID: {video_id}")
-        logger.info(f"Ambiente: {'Heroku' if IS_HEROKU else 'Non-Heroku'}")
-        logger.info(f"Proxy configurato: {bool(PROXIES)}")
-        
-        # Strategia 1: Prova con lista di lingue specifiche
+    # Utilizzo del semaforo per limitare le richieste concorrenti
+    async with TRANSCRIPT_SEMAPHORE:
+        logger.info(f"[CONCORRENZA] Inizio richiesta trascrizione per video ID: {video_id}")
         try:
-            logger.info("Tentativo trascrizione con lingue specifiche (en, it)")
-            transcript_list = ProxyTranscriptApi.get_transcript(video_id, languages=['en', 'it'])
-            transcript = ' '.join([item['text'] for item in transcript_list])
-            logger.info("Trascrizione ottenuta con successo (lingua specificata)")
-            return transcript
-        except (NoTranscriptFound, TranscriptsDisabled) as e:
-            logger.warning(f"Nessuna trascrizione in lingue specifiche: {e}")
+            logger.info(f"Richiesta trascrizione per video ID: {video_id}")
+            logger.info(f"Ambiente: {'Heroku' if IS_HEROKU else 'Non-Heroku'}")
+            logger.info(f"Proxy configurato: {bool(PROXIES)}")
             
-            # Strategia 2: Prova con rilevamento automatico della lingua
+            # Strategia 1: Prova con lista di lingue specifiche
             try:
-                logger.info("Tentativo trascrizione con rilevamento automatico lingua")
-                transcript_list = ProxyTranscriptApi.get_transcript(video_id)
+                logger.info("Tentativo trascrizione con lingue specifiche (en, it)")
+                transcript_list = ProxyTranscriptApi.get_transcript(video_id, languages=['en', 'it'])
                 transcript = ' '.join([item['text'] for item in transcript_list])
-                logger.info("Trascrizione ottenuta con rilevamento automatico lingua")
+                logger.info("Trascrizione ottenuta con successo (lingua specificata)")
+                logger.info(f"[CONCORRENZA] Fine richiesta trascrizione per video ID: {video_id}")
                 return transcript
-            except Exception as e2:
-                logger.warning(f"Rilevamento automatico lingua fallito: {e2}")
+            except (NoTranscriptFound, TranscriptsDisabled) as e:
+                logger.warning(f"Nessuna trascrizione in lingue specifiche: {e}")
                 
-                # Strategia 3: Prova a elencare tutte le trascrizioni disponibili e seleziona la prima
+                # Strategia 2: Prova con rilevamento automatico della lingua
                 try:
-                    transcript_list = ProxyTranscriptApi.list_transcripts(video_id)
+                    logger.info("Tentativo trascrizione con rilevamento automatico lingua")
+                    transcript_list = ProxyTranscriptApi.get_transcript(video_id)
+                    transcript = ' '.join([item['text'] for item in transcript_list])
+                    logger.info("Trascrizione ottenuta con rilevamento automatico lingua")
+                    logger.info(f"[CONCORRENZA] Fine richiesta trascrizione per video ID: {video_id}")
+                    return transcript
+                except Exception as e2:
+                    logger.warning(f"Rilevamento automatico lingua fallito: {e2}")
                     
-                    # Prendi la prima trascrizione disponibile
-                    for transcript_obj in transcript_list:
-                        transcript_data = transcript_obj.fetch()
-                        transcript = ' '.join([item['text'] for item in transcript_data.snippets])
-                        logger.info(f"Successfully retrieved transcript in {transcript_obj.language_code}")
-                        return transcript
+                    # Strategia 3: Prova a elencare tutte le trascrizioni disponibili e seleziona la prima
+                    try:
+                        transcript_list = ProxyTranscriptApi.list_transcripts(video_id)
                         
-                except Exception as e3:
-                    logger.warning(f"Failed to list available transcripts: {e3}")
-                    # Continua con le eccezioni esterne
-                    raise e3
-    
-    except (TranscriptsDisabled, NoTranscriptFound) as e:
-        logger.warning(f"No transcript available on YouTube: {e}")
-        logger.warning(f"Video URL: https://www.youtube.com/watch?v={video_id}")
-        return None
-    except Exception as e:
-        logger.error(f"Error retrieving transcript from YouTube: {e}")
-        logger.error(f"Video URL: https://www.youtube.com/watch?v={video_id}")
-        # Log dettagliati per il debug
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return None
+                        # Prendi la prima trascrizione disponibile
+                        for transcript_obj in transcript_list:
+                            transcript_data = transcript_obj.fetch()
+                            transcript = ' '.join([item['text'] for item in transcript_data.snippets])
+                            logger.info(f"Successfully retrieved transcript in {transcript_obj.language_code}")
+                            logger.info(f"[CONCORRENZA] Fine richiesta trascrizione per video ID: {video_id}")
+                            return transcript
+                            
+                    except Exception as e3:
+                        logger.warning(f"Failed to list available transcripts: {e3}")
+                        # Continua con le eccezioni esterne
+                        raise e3
+        
+        except (TranscriptsDisabled, NoTranscriptFound) as e:
+            logger.warning(f"No transcript available on YouTube: {e}")
+            logger.warning(f"Video URL: https://www.youtube.com/watch?v={video_id}")
+            logger.info(f"[CONCORRENZA] Fallita richiesta trascrizione per video ID: {video_id}")
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving transcript from YouTube: {e}")
+            logger.error(f"Video URL: https://www.youtube.com/watch?v={video_id}")
+            # Log dettagliati per il debug
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.info(f"[CONCORRENZA] Fallita richiesta trascrizione per video ID: {video_id}")
+            return None
 
 async def download_audio(video_id: str) -> Optional[str]:
     """
@@ -549,6 +563,27 @@ async def transcribe_with_whisper_api(audio_file: str) -> Optional[str]:
 async def summarize_with_ai(transcript: str, video_title: str, service: Literal["openai", "deepseek"] = "openai") -> Optional[str]:
     """Generate a summary of the transcript using either OpenAI's GPT or Deepseek."""
     
+    # Utilizzo del semaforo per limitare le richieste concorrenti alle API di AI
+    async with SUMMARY_SEMAPHORE:
+        logger.info(f"[CONCORRENZA] Inizio generazione riassunto per: {video_title[:30]}...")
+        
+        try:
+            # Aggiungi un timeout di 60 secondi per la chiamata API
+            return await asyncio.wait_for(
+                _summarize_with_service(transcript, video_title, service),
+                timeout=60.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout durante il riassunto con {service} per: {video_title[:30]}")
+            logger.info(f"[CONCORRENZA] Fallita generazione riassunto (timeout) per: {video_title[:30]}")
+            return None
+        except Exception as e:
+            logger.error(f"Error generating summary with {service}: {e}")
+            logger.info(f"[CONCORRENZA] Fallita generazione riassunto per: {video_title[:30]}")
+            return None
+
+async def _summarize_with_service(transcript: str, video_title: str, service: Literal["openai", "deepseek"]) -> Optional[str]:
+    """Funzione interna per generare il riassunto con un servizio specifico."""
     # Prepare the prompt
     system_prompt = "You are an expert at summarizing video content in Italian. Create a comprehensive summary of the following video transcript."
     user_prompt = f"Title: {video_title}\n\nTranscript:\n{transcript}\n\nPlease provide a detailed summary of this video's content, highlighting the main points, key insights, and important details."
@@ -595,11 +630,13 @@ async def summarize_with_ai(transcript: str, video_title: str, service: Literal[
             
         summary = response.choices[0].message.content
         logger.info("Summary generation complete")
+        logger.info(f"[CONCORRENZA] Fine generazione riassunto per: {video_title[:30]}")
         return summary
         
     except Exception as e:
-        logger.error(f"Error generating summary with {service}: {e}")
-        return None
+        # Rilancia l'eccezione per farla gestire dal chiamante
+        logger.error(f"Error in _summarize_with_service with {service}: {e}")
+        raise
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
@@ -670,10 +707,13 @@ async def check_transcript_availability(video_id: str) -> bool:
 
 async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Process a YouTube URL and show action buttons."""
-    if not is_user_allowed(update.effective_user.id):
+    user_id = update.effective_user.id
+    logger.info(f"[CONCORRENZA] Richiesta ricevuta da utente {user_id} per processare URL YouTube")
+    
+    if not is_user_allowed(user_id):
         await update.message.reply_text(
             "❌ Non sei autorizzato ad utilizzare questo bot.\n\n"
-            f"Il tuo Telegram ID è: {update.effective_user.id}"
+            f"Il tuo Telegram ID è: {user_id}"
         )
         return
         
@@ -724,24 +764,27 @@ async def process_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle button presses."""
+    """Handle button presses with improved concurrency management."""
     query = update.callback_query
+    user_id = update.effective_user.id
+    logger.info(f"[CONCORRENZA] Callback ricevuta da utente {user_id}: {query.data}")
     
-    if not is_user_allowed(update.effective_user.id):
+    if not is_user_allowed(user_id):
         await query.answer("❌ Non sei autorizzato ad utilizzare questo bot.", show_alert=True)
         await query.edit_message_text(
             "❌ Non sei autorizzato ad utilizzare questo bot.\n\n"
-            f"Il tuo Telegram ID è: {update.effective_user.id}"
+            f"Il tuo Telegram ID è: {user_id}"
         )
         return
-        
+
     await query.answer()
     
     video_id = context.user_data.get('video_id')
     if not video_id:
         await query.edit_message_text("❌ Sessione scaduta. Invia nuovamente il link YouTube.")
         return
-
+    
+    # Azioni che non richiedono semaforo o timeout (navigazione semplice)
     if query.data == 'summary_choice':
         # Mostra opzioni per il tipo di riassunto
         keyboard = [
@@ -791,80 +834,153 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup=reply_markup
         )
         return
+        
+    if query.data == 'cancel':
+        await query.edit_message_text("⚠️ Operazione annullata.")
+        return
 
-    if query.data in ['check_ip_proxy', 'check_ip_no_proxy']:
-        # Imposta l'uso del proxy in base alla scelta
-        use_proxy = (query.data == 'check_ip_proxy')
-        proxy_status = "attivato" if use_proxy else "disattivato"
-        await query.edit_message_text(f"⏳ Verifica IP in corso con proxy {proxy_status}...")
-        
+    # Per tutte le altre operazioni che richiedono elaborazione, utilizziamo il semaforo globale e timeout
+    try:
+        # Usa il semaforo globale per limitare le richieste concorrenti
+        # Se non riusciamo ad acquisire il semaforo entro 5 secondi, notifichiamo l'utente
         try:
-            # Configura la sessione con o senza proxy
-            session = requests.Session()
-            selected_user_agent = random.choice(USER_AGENTS)
-            session.headers.update({'User-Agent': selected_user_agent})
-            
-            # Per il test senza proxy, disabilitiamo temporaneamente il proxy
-            if not use_proxy:
-                session.proxies.clear()
-            
-            # Misura il tempo di risposta
-            start_time = time.time()
-            response = session.get('https://api.ipify.org?format=json')
-            elapsed_time = time.time() - start_time
-            
-            if response.status_code == 200:
-                ip_data = response.json()
-                ip_address = ip_data.get('ip', 'Non disponibile')
-                
-                # Prepara il messaggio di debug
-                debug_info = (
-                    f"✅ Verifica IP completata!\n\n"
-                    f"🔌 Proxy: {proxy_status}\n"
-                    f"🌐 Indirizzo IP: {ip_address}\n"
-                    f"⏱️ Tempo di risposta: {elapsed_time:.2f} secondi\n"
-                    f"🖥️ Ambiente: {'Heroku' if IS_HEROKU else 'Locale/Altro'}\n\n"
-                )
-                
-                # Aggiungi pulsanti per continuare
-                keyboard = [
-                    [
-                        InlineKeyboardButton("🔄 Riprova con proxy", callback_data='check_ip_proxy'),
-                        InlineKeyboardButton("🔄 Riprova senza proxy", callback_data='check_ip_no_proxy')
-                    ],
-                    [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(debug_info, reply_markup=reply_markup)
-            else:
-                error_info = (
-                    f"❌ Verifica IP fallita\n\n"
-                    f"🔌 Proxy: {proxy_status}\n"
-                    f"⚠️ Status code: {response.status_code}\n"
-                    f"⏱️ Tempo di risposta: {elapsed_time:.2f} secondi\n"
-                )
-                
-                # Offri opzioni per riprovare
-                keyboard = [
-                    [
-                        InlineKeyboardButton("🔄 Riprova", callback_data=query.data),
-                        InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(error_info, reply_markup=reply_markup)
+            # Tenta di acquisire il semaforo con un timeout breve
+            acquired = False
+            async with asyncio.timeout(5.0):
+                acquired = await asyncio.shield(GLOBAL_REQUEST_SEMAPHORE.acquire())
+        except asyncio.TimeoutError:
+            # Se non riusciamo ad acquisire il semaforo in tempo
+            logger.warning(f"[CONCORRENZA] Impossibile acquisire il semaforo per utente {user_id}, troppe richieste simultanee")
+            await query.edit_message_text(
+                "⏳ Troppe richieste in corso. Riprova fra qualche secondo...",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
+            return
         
-        except Exception as e:
-            # Gestisci errori durante la verifica
-            error_msg = str(e)
-            logger.error(f"Error during IP check: {error_msg}")
+        # Se siamo qui, abbiamo acquisito il semaforo
+        try:
+            # Aggiungi un timeout per le operazioni lunghe e processa l'azione
+            await query.edit_message_text("⏳ Elaborazione in corso...")
+            await asyncio.wait_for(
+                process_button_action(query, context, user_id, video_id),
+                timeout=BUTTON_CALLBACK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[CONCORRENZA] Timeout durante l'elaborazione della richiesta {query.data} per utente {user_id}")
+            await query.edit_message_text(
+                "⏰ L'operazione sta impiegando troppo tempo ed è stata interrotta.\n"
+                "Riprova più tardi o con un altro video.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
+        finally:
+            # Rilascia il semaforo quando abbiamo finito
+            if acquired:
+                GLOBAL_REQUEST_SEMAPHORE.release()
+                logger.info(f"[CONCORRENZA] Rilasciato semaforo per utente {user_id}")
+                
+    except Exception as e:
+        logger.error(f"[CONCORRENZA] Errore durante l'elaborazione della richiesta: {e}")
+        # Gestione avanzata degli errori
+        error_msg = str(e).lower()
+        
+        if "quota" in error_msg or "rate" in error_msg:
+            await query.edit_message_text(
+                "❌ Errore: limite di quota API raggiunto. Riprova più tardi.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
+        elif "auth" in error_msg or "key" in error_msg:
+            await query.edit_message_text(
+                "❌ Errore di autenticazione API. Contatta l'amministratore del bot.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
+        else:
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Riprova", callback_data=query.data),
+                    InlineKeyboardButton("❌ Annulla", callback_data='cancel')
+                ],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"❌ Si è verificato un errore durante l'elaborazione.\n"
+                f"Dettaglio: {str(e)[:100]}...\n"
+                f"Vuoi riprovare?",
+                reply_markup=reply_markup
+            )
             
-            error_info = (
-                f"❌ Verifica IP fallita - Errore\n\n"
+async def process_button_action(query, context, user_id, video_id):
+    """Processa le azioni dei pulsanti in modo asincrono con gestione degli errori."""
+    try:
+        if query.data in ['check_ip_proxy', 'check_ip_no_proxy']:
+            await process_ip_check(query, context)
+            
+        elif query.data in ['test_proxy', 'test_no_proxy']:
+            await process_proxy_test(query, context, video_id)
+            
+        elif query.data == 'retry_with_proxy':
+            await process_retry_with_proxy(query, context, video_id)
+            
+        elif query.data in ['transcript', 'summary_openai', 'summary_deepseek']:
+            await process_transcript_or_summary(query, context, video_id)
+            
+    except Exception as e:
+        # Cattura e rilancia l'eccezione per gestirla nel chiamante
+        logger.error(f"Errore in process_button_action: {e}")
+        raise
+
+async def process_ip_check(query, context):
+    """Processa la verifica dell'indirizzo IP."""
+    # Imposta l'uso del proxy in base alla scelta
+    use_proxy = (query.data == 'check_ip_proxy')
+    proxy_status = "attivato" if use_proxy else "disattivato"
+    await query.edit_message_text(f"⏳ Verifica IP in corso con proxy {proxy_status}...")
+    
+    try:
+        # Configura la sessione con o senza proxy
+        session = requests.Session()
+        selected_user_agent = random.choice(USER_AGENTS)
+        session.headers.update({'User-Agent': selected_user_agent})
+        
+        # Per il test senza proxy, disabilitiamo temporaneamente il proxy
+        if not use_proxy:
+            session.proxies.clear()
+        
+        # Misura il tempo di risposta
+        start_time = time.time()
+        response = session.get('https://api.ipify.org?format=json')
+        elapsed_time = time.time() - start_time
+        
+        if response.status_code == 200:
+            ip_data = response.json()
+            ip_address = ip_data.get('ip', 'Non disponibile')
+            
+            # Prepara il messaggio di debug
+            debug_info = (
+                f"✅ Verifica IP completata!\n\n"
                 f"🔌 Proxy: {proxy_status}\n"
-                f"⚠️ Errore: {error_msg[:200]}...\n\n"
+                f"🌐 Indirizzo IP: {ip_address}\n"
+                f"⏱️ Tempo di risposta: {elapsed_time:.2f} secondi\n"
+                f"🖥️ Ambiente: {'Heroku' if IS_HEROKU else 'Locale/Altro'}\n\n"
+            )
+            
+            # Aggiungi pulsanti per continuare
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Riprova con proxy", callback_data='check_ip_proxy'),
+                    InlineKeyboardButton("🔄 Riprova senza proxy", callback_data='check_ip_no_proxy')
+                ],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(debug_info, reply_markup=reply_markup)
+        else:
+            error_info = (
+                f"❌ Verifica IP fallita\n\n"
+                f"🔌 Proxy: {proxy_status}\n"
+                f"⚠️ Status code: {response.status_code}\n"
+                f"⏱️ Tempo di risposta: {elapsed_time:.2f} secondi\n"
             )
             
             # Offri opzioni per riprovare
@@ -877,96 +993,94 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await query.edit_message_text(error_info, reply_markup=reply_markup)
+    
+    except Exception as e:
+        # Gestisci errori durante la verifica
+        error_msg = str(e)
+        logger.error(f"Error during IP check: {error_msg}")
         
-        return
+        error_info = (
+            f"❌ Verifica IP fallita - Errore\n\n"
+            f"🔌 Proxy: {proxy_status}\n"
+            f"⚠️ Errore: {error_msg[:200]}...\n\n"
+        )
+        
+        # Offri opzioni per riprovare
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Riprova", callback_data=query.data),
+                InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(error_info, reply_markup=reply_markup)
 
-    if query.data == 'test_proxy' or query.data == 'test_no_proxy':
-        # Imposta l'uso del proxy in base alla scelta
-        use_proxy = (query.data == 'test_proxy')
-        context.user_data['last_action'] = 'transcript'  # Default a trascrizione per test
+async def process_proxy_test(query, context, video_id):
+    """Processa il test del proxy."""
+    # Imposta l'uso del proxy in base alla scelta
+    use_proxy = (query.data == 'test_proxy')
+    context.user_data['last_action'] = 'transcript'  # Default a trascrizione per test
+    
+    proxy_status = "attivato" if use_proxy else "disattivato"
+    await query.edit_message_text(f"⏳ Test in corso con proxy {proxy_status}...")
+    
+    try:
+        video_title = get_video_title(video_id)
         
-        proxy_status = "attivato" if use_proxy else "disattivato"
-        await query.edit_message_text(f"⏳ Test in corso con proxy {proxy_status}...")
+        # Per il test senza proxy, disabilitiamo temporaneamente il proxy
+        if not use_proxy:
+            # Salva le variabili d'ambiente originali
+            original_http_proxy = os.environ.get('HTTP_PROXY')
+            original_https_proxy = os.environ.get('HTTPS_PROXY')
+            
+            # Rimuovi temporaneamente le variabili d'ambiente del proxy
+            if 'HTTP_PROXY' in os.environ:
+                del os.environ['HTTP_PROXY']
+            if 'HTTPS_PROXY' in os.environ:
+                del os.environ['HTTPS_PROXY']
         
-        try:
-            video_title = get_video_title(video_id)
-            
-            # Per il test senza proxy, disabilitiamo temporaneamente il proxy
-            if not use_proxy:
-                # Salva le variabili d'ambiente originali
-                original_http_proxy = os.environ.get('HTTP_PROXY')
-                original_https_proxy = os.environ.get('HTTPS_PROXY')
-                
-                # Rimuovi temporaneamente le variabili d'ambiente del proxy
-                if 'HTTP_PROXY' in os.environ:
-                    del os.environ['HTTP_PROXY']
-                if 'HTTPS_PROXY' in os.environ:
-                    del os.environ['HTTPS_PROXY']
-            
-            # Ottieni la trascrizione
-            start_time = time.time()
-            transcript = await get_transcript_from_youtube(video_id)
-            elapsed_time = time.time() - start_time
-            
-            # Ripristina le variabili d'ambiente del proxy se necessario
-            if not use_proxy and original_http_proxy:
-                os.environ['HTTP_PROXY'] = original_http_proxy
-            if not use_proxy and original_https_proxy:
-                os.environ['HTTPS_PROXY'] = original_https_proxy
-            
-            if transcript:
-                # Mostra solo un estratto della trascrizione per il test
-                transcript_preview = transcript[:200] + "..." if len(transcript) > 200 else transcript
-                
-                # Prepara il messaggio di debug
-                debug_info = (
-                    f"✅ Test completato con successo!\n\n"
-                    f"🔌 Proxy: {proxy_status}\n"
-                    f"⏱️ Tempo impiegato: {elapsed_time:.2f} secondi\n"
-                    f"📊 Lunghezza trascrizione: {len(transcript)} caratteri\n\n"
-                    f"📝 Anteprima trascrizione:\n{transcript_preview}\n\n"
-                )
-                
-                # Aggiungi pulsanti per continuare
-                keyboard = [
-                    [
-                        InlineKeyboardButton("📝 Trascrizione completa", callback_data='transcript'),
-                        InlineKeyboardButton("📚 Riassunto", callback_data='summary_choice')
-                    ],
-                    [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(debug_info, reply_markup=reply_markup)
-            else:
-                # Gestisci il caso in cui la trascrizione non è disponibile
-                error_info = (
-                    f"❌ Test fallito - Nessuna trascrizione disponibile\n\n"
-                    f"🔌 Proxy: {proxy_status}\n"
-                    f"⏱️ Tempo impiegato: {elapsed_time:.2f} secondi\n\n"
-                )
-                
-                # Offri opzioni per riprovare
-                keyboard = [
-                    [
-                        InlineKeyboardButton("🔄 Riprova con proxy", callback_data='test_proxy'),
-                        InlineKeyboardButton("🔄 Riprova senza proxy", callback_data='test_no_proxy')
-                    ],
-                    [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(error_info, reply_markup=reply_markup)
+        # Ottieni la trascrizione
+        start_time = time.time()
+        transcript = await get_transcript_from_youtube(video_id)
+        elapsed_time = time.time() - start_time
         
-        except Exception as e:
-            # Gestisci errori durante il test
-            error_msg = str(e)
-            logger.error(f"Error during proxy test: {error_msg}")
+        # Ripristina le variabili d'ambiente del proxy se necessario
+        if not use_proxy and original_http_proxy:
+            os.environ['HTTP_PROXY'] = original_http_proxy
+        if not use_proxy and original_https_proxy:
+            os.environ['HTTPS_PROXY'] = original_https_proxy
+        
+        if transcript:
+            # Mostra solo un estratto della trascrizione per il test
+            transcript_preview = transcript[:200] + "..." if len(transcript) > 200 else transcript
             
-            error_info = (
-                f"❌ Test fallito - Errore\n\n"
+            # Prepara il messaggio di debug
+            debug_info = (
+                f"✅ Test completato con successo!\n\n"
                 f"🔌 Proxy: {proxy_status}\n"
-                f"⚠️ Errore: {error_msg[:200]}...\n\n"
+                f"⏱️ Tempo impiegato: {elapsed_time:.2f} secondi\n"
+                f"📊 Lunghezza trascrizione: {len(transcript)} caratteri\n\n"
+                f"📝 Anteprima trascrizione:\n{transcript_preview}\n\n"
+            )
+            
+            # Aggiungi pulsanti per continuare
+            keyboard = [
+                [
+                    InlineKeyboardButton("📝 Trascrizione completa", callback_data='transcript'),
+                    InlineKeyboardButton("📚 Riassunto", callback_data='summary_choice')
+                ],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(debug_info, reply_markup=reply_markup)
+        else:
+            # Gestisci il caso in cui la trascrizione non è disponibile
+            error_info = (
+                f"❌ Test fallito - Nessuna trascrizione disponibile\n\n"
+                f"🔌 Proxy: {proxy_status}\n"
+                f"⏱️ Tempo impiegato: {elapsed_time:.2f} secondi\n\n"
             )
             
             # Offri opzioni per riprovare
@@ -980,182 +1094,216 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await query.edit_message_text(error_info, reply_markup=reply_markup)
+    
+    except Exception as e:
+        # Gestisci errori durante il test
+        error_msg = str(e)
+        logger.error(f"Error during proxy test: {error_msg}")
         
-        return
+        error_info = (
+            f"❌ Test fallito - Errore\n\n"
+            f"🔌 Proxy: {proxy_status}\n"
+            f"⚠️ Errore: {error_msg[:200]}...\n\n"
+        )
+        
+        # Offri opzioni per riprovare
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Riprova con proxy", callback_data='test_proxy'),
+                InlineKeyboardButton("🔄 Riprova senza proxy", callback_data='test_no_proxy')
+            ],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(error_info, reply_markup=reply_markup)
 
-    if query.data == 'retry_with_proxy':
-        # Non serve più questa funzione poiché il proxy è configurato globalmente
-        await query.edit_message_text("⏳ Riprovo l'operazione...")
+async def process_retry_with_proxy(query, context, video_id):
+    """Processa il retry con proxy."""
+    await query.edit_message_text("⏳ Riprovo l'operazione...")
+    
+    try:
+        video_title = get_video_title(video_id)
+        last_action = context.user_data.get('last_action')
         
-        try:
-            video_title = get_video_title(video_id)
-            last_action = context.user_data.get('last_action')
+        # Ottieni la trascrizione
+        transcript = await get_transcript_from_youtube(video_id)
+        
+        if transcript is None:
+            await query.edit_message_text(
+                "❌ Non è stato possibile ottenere la trascrizione.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
+            return
+        
+        # Procedi in base all'azione originale
+        if last_action == 'transcript':
+            # Invia la trascrizione
+            chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    header = f"📝 Trascrizione: {video_title}\n\n"
+                    await query.message.reply_text(header + chunk)
+                else:
+                    await query.message.reply_text(chunk)
+            await query.edit_message_text(
+                "✅ Trascrizione completata!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
+        
+        elif last_action in ['summary_openai', 'summary_deepseek']:
+            service = "openai" if last_action == 'summary_openai' else "deepseek"
             
-            # Ottieni la trascrizione
-            transcript = await get_transcript_from_youtube(video_id)
-            
-            if transcript is None:
+            # Verifica disponibilità API key
+            if service == "openai" and not OPENAI_API_KEY:
                 await query.edit_message_text(
-                    "❌ Non è stato possibile ottenere la trascrizione."
+                    "❌ OpenAI API key non configurata. Contatta l'amministratore del bot.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
                 )
                 return
+            elif service == "deepseek" and not DEEPSEEK_API_KEY:
+                await query.edit_message_text(
+                    "❌ Deepseek API key non configurata. Contatta l'amministratore del bot.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+                )
+                return
+
+            await query.edit_message_text(f"⏳ Generazione riassunto con {service.upper()} in corso...")
+            summary = await summarize_with_ai(transcript, video_title, service)
             
-            # Procedi in base all'azione originale
-            if last_action == 'transcript':
-                # Invia la trascrizione
-                chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
-                for i, chunk in enumerate(chunks):
-                    if i == 0:
-                        header = f"📝 Trascrizione: {video_title}\n\n"
-                        await query.message.reply_text(header + chunk)
-                    else:
+            if summary:
+                service_name = "OpenAI (gpt-4o-mini)" if service == "openai" else "Deepseek"
+                response = f"📚 Riassunto ({service_name}): {video_title}\n\n{summary}"
+                
+                if len(response) > 4000:
+                    chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+                    for chunk in chunks:
                         await query.message.reply_text(chunk)
-                await query.edit_message_text("✅ Trascrizione completata!")
-            
-            elif last_action in ['summary_openai', 'summary_deepseek']:
-                service = "openai" if last_action == 'summary_openai' else "deepseek"
-                
-                # Verifica disponibilità API key
-                if service == "openai" and not OPENAI_API_KEY:
-                    await query.edit_message_text("❌ OpenAI API key non configurata. Contatta l'amministratore del bot.")
-                    return
-                elif service == "deepseek" and not DEEPSEEK_API_KEY:
-                    await query.edit_message_text("❌ Deepseek API key non configurata. Contatta l'amministratore del bot.")
-                    return
-
-                await query.edit_message_text(f"⏳ Generazione riassunto con {service.upper()} in corso...")
-                summary = await summarize_with_ai(transcript, video_title, service)
-                
-                if summary:
-                    service_name = "OpenAI (gpt-4o-mini)" if service == "openai" else "Deepseek"
-                    response = f"📚 Riassunto ({service_name}): {video_title}\n\n{summary}"
-                    
-                    if len(response) > 4000:
-                        chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
-                        for chunk in chunks:
-                            await query.message.reply_text(chunk)
-                    else:
-                        await query.message.reply_text(response)
-                    
-                    await query.edit_message_text(f"✅ Riassunto con {service_name} completato!")
                 else:
-                    await query.edit_message_text(f"❌ Non è stato possibile generare il riassunto con {service}.")
-        
-        except Exception as e:
-            logger.error(f"Error processing request: {e}")
-            await query.edit_message_text(
-                "❌ Si è verificato un errore durante l'elaborazione della richiesta."
-            )
-        return
+                    await query.message.reply_text(response)
+                
+                await query.edit_message_text(
+                    f"✅ Riassunto con {service_name} completato!",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+                )
+            else:
+                await query.edit_message_text(
+                    f"❌ Non è stato possibile generare il riassunto con {service}.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+                )
+    
+    except Exception as e:
+        logger.error(f"Error processing retry request: {e}")
+        await query.edit_message_text(
+            "❌ Si è verificato un errore durante l'elaborazione della richiesta.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+        )
 
+async def process_transcript_or_summary(query, context, video_id):
+    """Processa la richiesta di trascrizione o riassunto."""
+    context.user_data['last_action'] = query.data
+    
     try:
         video_title = get_video_title(video_id)
         
-        if query.data in ['transcript', 'summary_openai', 'summary_deepseek']:
-            context.user_data['last_action'] = query.data
-            await query.edit_message_text("⏳ Elaborazione in corso...")
-            
-            # Ottieni la trascrizione
-            transcript = None
-            try:
-                transcript = await get_transcript_from_youtube(video_id)
-            except Exception as e:
-                # Offri l'opzione di riprovare
-                keyboard = [
-                    [
-                        InlineKeyboardButton("🔄 Riprova", callback_data='retry_with_proxy'),
-                        InlineKeyboardButton("❌ Annulla", callback_data='cancel')
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(
-                    "❌ Non è stato possibile ottenere la trascrizione.\n"
-                    "Vuoi riprovare?",
-                    reply_markup=reply_markup
-                )
-                return
-
-            if transcript is None:
-                # Offri l'opzione di riprovare
-                keyboard = [
-                    [
-                        InlineKeyboardButton("🔄 Riprova", callback_data='retry_with_proxy'),
-                        InlineKeyboardButton("❌ Annulla", callback_data='cancel')
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(
-                    "❌ Non è stato possibile ottenere la trascrizione.\n"
-                    "Vuoi riprovare?",
-                    reply_markup=reply_markup
-                )
-                return
-
-            if query.data == 'transcript':
-                # Invia la trascrizione
-                chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
-                for i, chunk in enumerate(chunks):
-                    if i == 0:
-                        header = f"📝 Trascrizione: {video_title}\n\n"
-                        await query.message.reply_text(header + chunk)
-                    else:
-                        await query.message.reply_text(chunk)
-                await query.edit_message_text("✅ Trascrizione completata!")
-
-            elif query.data in ['summary_openai', 'summary_deepseek']:
-                service = "openai" if query.data == 'summary_openai' else "deepseek"
-                
-                # Verifica disponibilità API key
-                if service == "openai" and not OPENAI_API_KEY:
-                    await query.edit_message_text("❌ OpenAI API key non configurata. Contatta l'amministratore del bot.")
-                    return
-                elif service == "deepseek" and not DEEPSEEK_API_KEY:
-                    await query.edit_message_text("❌ Deepseek API key non configurata. Contatta l'amministratore del bot.")
-                    return
-
-                await query.edit_message_text(f"⏳ Generazione riassunto con {service.upper()} in corso...")
-                summary = await summarize_with_ai(transcript, video_title, service)
-                
-                if summary:
-                    service_name = "OpenAI (gpt-4o-mini)" if service == "openai" else "Deepseek"
-                    response = f"📚 Riassunto ({service_name}): {video_title}\n\n{summary}"
-                    
-                    if len(response) > 4000:
-                        chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
-                        for chunk in chunks:
-                            await query.message.reply_text(chunk)
-                    else:
-                        await query.message.reply_text(response)
-                    
-                    await query.edit_message_text(f"✅ Riassunto con {service_name} completato!")
-                else:
-                    await query.edit_message_text(f"❌ Non è stato possibile generare il riassunto con {service}.")
-
-    except Exception as e:
-        logger.error(f"Error processing request: {e}")
-        error_msg = str(e).lower()
-        
-        if "quota" in error_msg or "rate" in error_msg:
-            await query.edit_message_text("❌ Errore: limite di quota API raggiunto. Riprova più tardi.")
-        elif "auth" in error_msg or "key" in error_msg:
-            await query.edit_message_text("❌ Errore di autenticazione API. Contatta l'amministratore del bot.")
-        else:
+        # Ottieni la trascrizione
+        transcript = None
+        try:
+            transcript = await get_transcript_from_youtube(video_id)
+        except Exception as e:
+            logger.error(f"Error getting transcript: {e}")
+            # Offri l'opzione di riprovare
             keyboard = [
                 [
                     InlineKeyboardButton("🔄 Riprova", callback_data='retry_with_proxy'),
                     InlineKeyboardButton("❌ Annulla", callback_data='cancel')
-                ]
+                ],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                "❌ Si è verificato un errore durante l'elaborazione.\n"
+                f"❌ Non è stato possibile ottenere la trascrizione.\nErrore: {str(e)[:100]}...\n"
                 "Vuoi riprovare?",
                 reply_markup=reply_markup
             )
+            return
 
-    if query.data == 'cancel':
-        await query.edit_message_text("⚠️ Operazione annullata.")
-        return
+        if transcript is None:
+            # Offri l'opzione di riprovare
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Riprova", callback_data='retry_with_proxy'),
+                    InlineKeyboardButton("❌ Annulla", callback_data='cancel')
+                ],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "❌ Non è stato possibile ottenere la trascrizione.\n"
+                "Vuoi riprovare?",
+                reply_markup=reply_markup
+            )
+            return
+
+        if query.data == 'transcript':
+            # Invia la trascrizione
+            chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    header = f"📝 Trascrizione: {video_title}\n\n"
+                    await query.message.reply_text(header + chunk)
+                else:
+                    await query.message.reply_text(chunk)
+            await query.edit_message_text(
+                "✅ Trascrizione completata!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
+
+        elif query.data in ['summary_openai', 'summary_deepseek']:
+            service = "openai" if query.data == 'summary_openai' else "deepseek"
+            
+            # Verifica disponibilità API key
+            if service == "openai" and not OPENAI_API_KEY:
+                await query.edit_message_text(
+                    "❌ OpenAI API key non configurata. Contatta l'amministratore del bot.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+                )
+                return
+            elif service == "deepseek" and not DEEPSEEK_API_KEY:
+                await query.edit_message_text(
+                    "❌ Deepseek API key non configurata. Contatta l'amministratore del bot.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+                )
+                return
+
+            await query.edit_message_text(f"⏳ Generazione riassunto con {service.upper()} in corso...")
+            summary = await summarize_with_ai(transcript, video_title, service)
+            
+            if summary:
+                service_name = "OpenAI (gpt-4o-mini)" if service == "openai" else "Deepseek"
+                response = f"📚 Riassunto ({service_name}): {video_title}\n\n{summary}"
+                
+                if len(response) > 4000:
+                    chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+                    for chunk in chunks:
+                        await query.message.reply_text(chunk)
+                else:
+                    await query.message.reply_text(response)
+                
+                await query.edit_message_text(
+                    f"✅ Riassunto con {service_name} completato!",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+                )
+            else:
+                await query.edit_message_text(
+                    f"❌ Non è stato possibile generare il riassunto con {service}.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+                )
+                
+    except Exception as e:
+        logger.error(f"Error in process_transcript_or_summary: {e}")
+        # Rilancia l'eccezione per gestirla nel chiamante
+        raise
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log Errors caused by Updates."""
@@ -1165,17 +1313,51 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if "terminated by other getUpdates request" in str(context.error):
         logger.error("ERRORE CRITICO: Un'altra istanza del bot è già in esecuzione. Termina tutte le altre istanze e riavvia.")
         return
+    
+    # Gestione specifica dei timeout
+    if isinstance(context.error, asyncio.TimeoutError) or "Timed out" in str(context.error):
+        logger.error(f"Rilevato timeout per {update}")
+        if update and update.effective_message:
+            keyboard = [[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.effective_message.reply_text(
+                "⏰ L'operazione ha richiesto troppo tempo ed è stata interrotta.\n"
+                "Riprova più tardi o con un video più breve.",
+                reply_markup=reply_markup
+            )
+        return
         
     # Verifica che update non sia None prima di accedere ai suoi attributi
     if update and update.effective_message:
-        await update.effective_message.reply_text(
-            "❌ Si è verificato un errore. Per favore, riprova più tardi."
-        )
+        # Messaggi di errore specifici per tipologia
+        error_msg = str(context.error).lower()
+        
+        if "quota" in error_msg or "rate" in error_msg:
+            await update.effective_message.reply_text(
+                "❌ Errore: limite di quota API raggiunto. Riprova più tardi.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
+        elif "auth" in error_msg or "key" in error_msg or "credentials" in error_msg:
+            await update.effective_message.reply_text(
+                "❌ Errore di autenticazione API. Contatta l'amministratore del bot.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
+        else:
+            await update.effective_message.reply_text(
+                "❌ Si è verificato un errore durante l'elaborazione della richiesta.\n"
+                "Per favore, riprova più tardi.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
+            )
 
 def main() -> None:
-    """Start the bot."""
-    # Create the Application
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    """Start the bot with advanced concurrency settings."""
+    # Create the Application with concurrent updates enabled
+    application = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .concurrent_updates(True)  # Abilita aggiornamenti concorrenti
+        .build()
+    )
 
     # Add handlers
     application.add_handler(CommandHandler("start", start))
@@ -1186,11 +1368,15 @@ def main() -> None:
     # Add error handler
     application.add_error_handler(error_handler)
 
-    # Log startup
-    logger.info("Starting bot in polling mode")
+    # Log startup with concurrency info
+    logger.info("Starting bot in polling mode with concurrent updates enabled")
     
-    # Start the Bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Start the Bot with optimized polling settings (versione sincrona)
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,  # Ignora gli update pendenti all'avvio
+    )
 
 if __name__ == '__main__':
+    # Avvia il bot senza gestione asincrona esplicita
     main() 
