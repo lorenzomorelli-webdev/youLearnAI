@@ -38,8 +38,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Proxy configuration - SOLO per YouTube
-USE_YOUTUBE_PROXY = os.getenv("USE_PROXY", "false").lower() == "true"
+# Proxy configuration for youtube
 PROXY_URL = os.getenv("PROXY_URL")  # Format: "http://username:password@host:port"
 
 # Whitelist configuration
@@ -91,7 +90,7 @@ def get_video_title(video_id: str) -> str:
     }
     
     # Usa il proxy solo per YouTube
-    if USE_YOUTUBE_PROXY and PROXY_URL:
+    if PROXY_URL:
         ydl_opts['proxy'] = PROXY_URL
     
     try:
@@ -379,7 +378,7 @@ def main() -> None:
     application.add_error_handler(error_handler)
 
     # Informazioni di avvio
-    proxy_status = "abilitato solo per YouTube" if USE_YOUTUBE_PROXY and PROXY_URL else "disabilitato"
+    proxy_status = "abilitato solo per YouTube" if PROXY_URL else "disabilitato"
     logger.info(f"YouLearn Bot avviato. Proxy {proxy_status}.")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
