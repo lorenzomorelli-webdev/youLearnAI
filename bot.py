@@ -6,31 +6,18 @@ Integrates the YouLearn functionality with a Telegram bot interface.
 
 import os
 import logging
-import tempfile
 from pathlib import Path
-from typing import Optional, Literal
-import time
-import random
-from functools import wraps
-import asyncio
-import platform
-import sys
+from typing import Optional, Literal, Dict, Any
+import re
+import httpx
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import yt_dlp
-import re
 import requests
-from tqdm import tqdm
 import dotenv
 from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-
-# Semafori per limitare le richieste concorrenti
-TRANSCRIPT_SEMAPHORE = asyncio.Semaphore(5)  # Max 5 richieste di trascrizione simultanee
-SUMMARY_SEMAPHORE = asyncio.Semaphore(3)     # Max 3 richieste di riassunto simultanee
-GLOBAL_REQUEST_SEMAPHORE = asyncio.Semaphore(5)  # Limite di richieste globali simultanee
-BUTTON_CALLBACK_TIMEOUT = 180.0  # Timeout per operazioni dei callback in secondi
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -51,8 +38,21 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
+# Proxy configuration - SOLO per YouTube
+USE_YOUTUBE_PROXY = os.getenv("USE_PROXY", "false").lower() == "true"
+PROXY_URL = os.getenv("PROXY_URL")  # Format: "http://username:password@host:port"
+
 # Whitelist configuration
 ALLOWED_USERS = os.getenv("ALLOWED_USERS", "")
+
+def get_youtube_proxy_dict() -> Optional[Dict[str, str]]:
+    """Restituisce un dizionario di configurazione proxy per YouTube se abilitato."""
+    if PROXY_URL:
+        return {
+            "http": PROXY_URL,
+            "https": PROXY_URL
+        }
+    return None
 
 def is_user_allowed(user_id: int) -> bool:
     """Check if a user is allowed to use the bot based on their Telegram ID."""
@@ -65,18 +65,6 @@ def is_user_allowed(user_id: int) -> bool:
         return user_id in allowed_ids
     except ValueError as e:
         logger.error(f"Error parsing ALLOWED_USERS: {e}")
-        return False
-
-# Funzione di utilità per gestire semafori con timeout in modo compatibile con Python 3.10
-async def acquire_semaphore_with_timeout(semaphore, timeout):
-    """Acquisisce un semaforo con timeout in modo compatibile con Python 3.10."""
-    try:
-        async def _acquire():
-            await semaphore.acquire()
-            return True
-            
-        return await asyncio.wait_for(_acquire(), timeout=timeout)
-    except asyncio.TimeoutError:
         return False
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -102,6 +90,10 @@ def get_video_title(video_id: str) -> str:
         'extract_flat': True
     }
     
+    # Usa il proxy solo per YouTube
+    if USE_YOUTUBE_PROXY and PROXY_URL:
+        ydl_opts['proxy'] = PROXY_URL
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
@@ -110,68 +102,67 @@ def get_video_title(video_id: str) -> str:
         logger.error(f"Error getting video title: {e}")
         return f"Video {video_id}"
 
-async def get_transcript_from_youtube(video_id: str) -> Optional[str]:
+def get_transcript_from_youtube(video_id: str) -> Optional[str]:
     """Get video transcript directly from YouTube."""
-    async with TRANSCRIPT_SEMAPHORE:
+    try:
+        # Usa il proxy solo per YouTube
+        proxies = get_youtube_proxy_dict()
+        
+        # Try first with specific languages
         try:
-            # Try with specific languages first
-            try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'it'])
-                return ' '.join([item['text'] for item in transcript_list])
-            except (NoTranscriptFound, TranscriptsDisabled):
-                # Try with auto-detection
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-                return ' '.join([item['text'] for item in transcript_list])
-                
-        except Exception as e:
-            logger.error(f"Error retrieving transcript: {e}")
-            return None
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'it'], proxies=proxies)
+            return ' '.join([entry['text'] for entry in transcript])
+        except (NoTranscriptFound, TranscriptsDisabled):
+            # Try with automatic language detection
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, proxies=proxies)
+            return ' '.join([entry['text'] for entry in transcript])
+            
+    except Exception as e:
+        logger.error(f"Error retrieving transcript: {e}")
+        return None
 
-async def summarize_with_ai(transcript: str, video_title: str, service: Literal["openai", "deepseek"] = "openai") -> Optional[str]:
+def summarize_with_ai(transcript: str, video_title: str, service: Literal["openai", "deepseek"] = "openai") -> Optional[str]:
     """Generate a summary using AI services."""
-    async with SUMMARY_SEMAPHORE:
-        try:
-            system_prompt = "You are an expert at summarizing video content in Italian. Create a comprehensive summary of the following video transcript."
-            user_prompt = f"Title: {video_title}\n\nTranscript:\n{transcript}\n\nPlease provide a detailed summary of this video's content, highlighting the main points, key insights, and important details."
+    try:
+        system_prompt = "You are an expert at summarizing video content in Italian. Create a comprehensive summary of the following video transcript."
+        user_prompt = f"Title: {video_title}\n\nTranscript:\n{transcript}\n\nPlease provide a detailed summary of this video's content, highlighting the main points, key insights, and important details."
+        
+        # Set up OpenAI client WITHOUT proxy configuration (connessione diretta)
+        client_kwargs: Dict[str, Any] = {}
+        
+        # Add API key based on service
+        if service == "openai":
+            if not OPENAI_API_KEY:
+                return None
+            client_kwargs["api_key"] = OPENAI_API_KEY
+            model = "gpt-4o-mini"
             
-            if service == "openai":
-                if not OPENAI_API_KEY:
-                    return None
-                    
-                client = OpenAI(api_key=OPENAI_API_KEY)
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=1500,
-                    temperature=0.5,
-                )
-                
-            elif service == "deepseek":
-                if not DEEPSEEK_API_KEY:
-                    return None
-                    
-                client = OpenAI(
-                    api_key=DEEPSEEK_API_KEY,
-                    base_url="https://api.deepseek.com"
-                )
-                response = client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=1500,
-                    temperature=0.5,
-                )
-            
-            return response.choices[0].message.content
-            
-        except Exception as e:
-            logger.error(f"Error generating summary: {e}")
-            return None
+        elif service == "deepseek":
+            if not DEEPSEEK_API_KEY:
+                return None
+            client_kwargs["api_key"] = DEEPSEEK_API_KEY
+            client_kwargs["base_url"] = "https://api.deepseek.com"
+            model = "deepseek-chat"
+        
+        # Create OpenAI client WITHOUT proxy
+        client = OpenAI(**client_kwargs)
+        
+        # Generate summary
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=1500,
+            temperature=0.5,
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        logger.error(f"Error generating summary: {e}")
+        return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
@@ -286,29 +277,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     try:
-        acquired = await acquire_semaphore_with_timeout(GLOBAL_REQUEST_SEMAPHORE, 5.0)
-        if not acquired:
-            await query.edit_message_text(
-                "⏳ Troppe richieste in corso. Riprova fra qualche secondo...",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
-            )
-            return
-        
-        try:
-            await query.edit_message_text("⏳ Elaborazione in corso...")
-            await asyncio.wait_for(
-                process_request(query, context, video_id),
-                timeout=BUTTON_CALLBACK_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            await query.edit_message_text(
-                "⏰ L'operazione sta impiegando troppo tempo ed è stata interrotta.\n"
-                "Riprova più tardi o con un altro video.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
-            )
-        finally:
-            GLOBAL_REQUEST_SEMAPHORE.release()
-            
+        await query.edit_message_text("⏳ Elaborazione in corso...")
+        await process_request(query, context, video_id)
     except Exception as e:
         logger.error(f"Error processing request: {e}")
         await query.edit_message_text(
@@ -320,7 +290,7 @@ async def process_request(query, context, video_id):
     """Process transcript or summary request."""
     try:
         video_title = get_video_title(video_id)
-        transcript = await get_transcript_from_youtube(video_id)
+        transcript = get_transcript_from_youtube(video_id)
         
         if transcript is None:
             await query.edit_message_text(
@@ -353,7 +323,7 @@ async def process_request(query, context, video_id):
                 return
 
             await query.edit_message_text(f"⏳ Generazione riassunto con {service.upper()} in corso...")
-            summary = await summarize_with_ai(transcript, video_title, service)
+            summary = summarize_with_ai(transcript, video_title, service)
             
             if summary:
                 service_name = "OpenAI (gpt-4o-mini)" if service == "openai" else "Deepseek"
@@ -385,27 +355,20 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error(f"Update {update} caused error {context.error}")
     
     if update and update.effective_message:
-        error_msg = str(context.error).lower()
-        
-        if isinstance(context.error, asyncio.TimeoutError) or "timed out" in error_msg:
-            await update.effective_message.reply_text(
-                "⏰ L'operazione ha richiesto troppo tempo ed è stata interrotta.\n"
-                "Riprova più tardi o con un video più breve.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
-            )
-        else:
-            await update.effective_message.reply_text(
-                "❌ Si è verificato un errore durante l'elaborazione della richiesta.\n"
-                "Per favore, riprova più tardi.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Indietro", callback_data='back_to_main')]])
-            )
+        await update.effective_message.reply_text(
+            "❌ Si è verificato un errore durante l'elaborazione della richiesta.\n"
+            "Per favore, riprova più tardi."
+        )
 
 def main() -> None:
     """Start the bot."""
+    if not TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN non impostato. Impossibile avviare il bot.")
+        return
+        
     application = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
-        .concurrent_updates(True)
         .build()
     )
 
@@ -415,7 +378,10 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
 
-    logger.info("Bot started")
+    # Informazioni di avvio
+    proxy_status = "abilitato solo per YouTube" if USE_YOUTUBE_PROXY and PROXY_URL else "disabilitato"
+    logger.info(f"YouLearn Bot avviato. Proxy {proxy_status}.")
+    
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == '__main__':

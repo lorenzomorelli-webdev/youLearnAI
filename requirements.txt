@@ -1,20 +1,15 @@
 # Bot dependencies
-python-telegram-bot==20.7
+python-telegram-bot==21.4
 
 # API clients
-openai==1.3.5
-requests==2.31.0
+openai==1.75.0
+httpx>=0.25.2
+requests==2.32.3
 
 # YouTube processing
-youtube-transcript-api==1.0.1
-yt-dlp==2023.11.16
+youtube-transcript-api==1.0.3
+yt-dlp==2025.03.31
 
 # Utilities
 python-dotenv==1.0.0
 tqdm==4.66.1
-
-# No longer need torch or whisper as we'll use the API
-# torch==2.1.2
-# torchaudio==2.1.2
-# git+https://github.com/openai/whisper.git
-# Note: At runtime we'll use a smaller model (tiny or base) instead of large
